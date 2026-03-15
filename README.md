@@ -4,14 +4,14 @@
    ╔══════════════════════════════════════════════════════════════╗
    ║        ISO 8583 MASTERCLASS — PAYMENTS SPECIALIST           ║
    ║                                                              ║
-   ║   28 semanas · Java 25 · jPOS · Mercado Brasileiro          ║
+   ║   30 semanas · Java 25 · jPOS · Mercado Brasileiro          ║
    ║   Do zero ao nível de quem lidera decisões em pagamentos     ║
    ╚══════════════════════════════════════════════════════════════╝
 ```
 
 ## O que é esta masterclass?
 
-Um programa de formação completa para se tornar **especialista em mensageria de pagamentos com cartões**, cobrindo ISO 8583, autorização, clearing, settlement, e o ecossistema brasileiro — tudo implementado em Java com jPOS.
+Um programa de formação completa para se tornar **especialista em mensageria de pagamentos com cartões**, cobrindo ISO 8583, autorização, clearing, settlement, chargebacks e o ecossistema brasileiro — tudo implementado em Java com jPOS.
 
 **Não é um curso de "campos ISO".** É uma formação para quem quer ser referência no tema — entender protocolo, negócio, operação e arquitetura de forma integrada.
 
@@ -32,6 +32,7 @@ Um programa de formação completa para se tornar **especialista em mensageria d
 ├── fase-05-emv-seguranca/        ← Semanas 17-20: EMV + HSM + Clearing
 ├── fase-06-producao/             ← Semanas 21-24: Observabilidade + Troubleshooting
 ├── fase-07-especializacao/       ← Semanas 25-28: Brasil + Certificação + Futuro
+├── fase-08-chargebacks-disputes/ ← Semanas 29-30: Chargebacks, Disputes e Representment
 │
 ├── referencias/                  ← Glossário, Response Codes, Modelo Econômico
 │
@@ -82,6 +83,7 @@ Um programa de formação completa para se tornar **especialista em mensageria d
 | **Implementador** | 5-12 | Construir auth E2E, rotear por BIN, tratar timeout |
 | **Avançado** | 13-20 | Reversal, EMV, HSM, clearing/settlement, parcelamento |
 | **Especialista** | 21-28 | Diagnosticar incidentes, desenhar switch, falar de negócio |
+| **Expert** | 29-30 | Operar disputes, construir automação de chargebacks, liability shift |
 
 ---
 
@@ -101,3 +103,6 @@ Ao completar as 28 semanas, você terá:
 - [ ] Documentação de arquitetura (ADRs, C4, Mermaid)
 - [ ] Runbook operacional
 - [ ] Portfólio público no GitHub
+- [ ] Motor de automação de disputes (chargebacks)
+- [ ] Domínio de reason codes Visa e Mastercard
+- [ ] Implementação de liability shift via 3DS

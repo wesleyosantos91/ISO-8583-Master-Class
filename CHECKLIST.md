@@ -186,3 +186,27 @@ Marque `[x]` ao completar cada item. Seja honesto — só marque quando realment
 - [ ] Runbook operacional
 - [ ] Apresentação para diferentes audiências
 - [ ] Portfólio publicado no GitHub
+
+---
+
+## Fase 8 — Chargebacks e Disputes (Semanas 29-30)
+
+### Semana 29 — Fundamentos e Ciclo de Vida
+- [ ] Sei diferenciar reversal, refund e chargeback sem hesitar
+- [ ] Conheço os reason codes Visa (10.x, 11.x, 12.x, 13.x) e os principais Mastercard
+- [ ] Entendo o ciclo completo: disputa → CB → representment → pre-arb → arbitration
+- [ ] Sei calcular e interpretar o chargeback ratio
+- [ ] Entendo o EMV liability shift e como 3DS muda a responsabilidade
+- [ ] Sei quais campos ISO precisam ser preservados para suportar disputes
+- [ ] Completei todos os exercícios
+- [ ] Entreguei o desafio do pico de chargebacks
+
+### Semana 30 — Representment, Prevenção e Operação
+- [ ] Sei decidir quando defender e quando aceitar um chargeback
+- [ ] Conheço as evidências necessárias por reason code
+- [ ] Entendo CVV2, AVS e velocity rules como ferramentas preventivas
+- [ ] Implementei DisputeEvaluator com lógica de decisão automática
+- [ ] Implementei DisputeOrchestrator com tracking de prazos
+- [ ] Testes unitários cobrindo os cenários de decisão
+- [ ] Completei todos os exercícios
+- [ ] Entreguei o Motor de Disputes (desafio integrador)
