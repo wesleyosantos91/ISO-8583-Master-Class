@@ -219,8 +219,236 @@ public interface TransactionParticipant {
 - `PREPARED` → "Fiz minha parte, pode continuar"
 - `ABORTED` → "Algo deu errado, aborte tudo"
 - `NO_JOIN` → "Preparei, mas não preciso de commit/abort"
+- `PREPARED | READONLY` → "Preparei, mas sou só leitura — não preciso de cleanup"
 
-## 3. Context — Passando dados entre participants
+## 3. O Protocolo 2PC: quem recebe o quê e quando
+
+Esta é a parte mais negligenciada do TransactionManager — e a origem da maioria dos bugs financeiros em produção.
+
+O TransactionManager implementa um **Two-Phase Commit (2PC)** simplificado. A regra central:
+
+> **Somente participants que retornaram `PREPARED` entram na "join list". Apenas eles recebem `commit()` ou `abort()`. E o `abort()` é chamado em ordem inversa da pipeline.**
+
+### Cenário 1 — Caminho feliz (todos aprovam)
+
+```
+Pipeline:  [A]         [B]         [C]         [D]
+           ValidatMsg  CheckDup    FwdIssuer   AuditLog
+
+Fase 1 — prepare():
+  A.prepare() → PREPARED    join-list: [A]
+  B.prepare() → PREPARED    join-list: [A, B]
+  C.prepare() → PREPARED    join-list: [A, B, C]
+  D.prepare() → NO_JOIN     join-list: [A, B, C]  ← D não entra
+
+Fase 2 — commit():
+  A.commit()   ← chamado
+  B.commit()   ← chamado
+  C.commit()   ← chamado
+  D.commit()   ← NÃO chamado (NO_JOIN)
+```
+
+### Cenário 2 — Falha no meio (C aborta)
+
+```
+Pipeline:  [A]         [B]         [C]         [D]
+           ValidatMsg  CheckDup    FwdIssuer   AuditLog
+
+Fase 1 — prepare():
+  A.prepare() → PREPARED    join-list: [A]
+  B.prepare() → PREPARED    join-list: [A, B]
+  C.prepare() → ABORTED     pipeline para aqui — D nunca é chamado
+
+Fase 2 — abort() em ORDEM INVERSA:
+  B.abort()   ← chamado primeiro (desfaz o que B fez)
+  A.abort()   ← chamado depois  (desfaz o que A fez)
+  C.abort()   ← NÃO chamado (C foi quem abortou)
+  D.abort()   ← NÃO chamado (D nunca chegou a preparar)
+```
+
+**Por que ordem inversa?** Porque B pode depender do que A fez. Desfazer na ordem inversa garante que as dependências são respeitadas — igual a um `finally` aninhado.
+
+### Cenário 3 — Exceção não tratada em prepare()
+
+```java
+// Se prepare() lança uma exceção não capturada:
+public int prepare(long id, Serializable context) {
+    throw new RuntimeException("banco fora do ar"); // ← não capturada
+}
+// O TransactionManager captura e trata como ABORTED.
+// abort() é chamado nos participants anteriores.
+// NUNCA deixe exceções propagarem — coloque try/catch e retorne ABORTED explicitamente.
+```
+
+### Cenário 4 — PREPARED | READONLY
+
+```java
+// Para participants que apenas leem dados (log, auditoria, roteamento):
+return PREPARED | READONLY;
+
+// O TM sabe que não há estado para desfazer.
+// Ainda entram na join-list, mas o TM pode otimizar o flush de estado.
+// Use sempre que seu participant não modifica nada persistente.
+```
+
+---
+
+### A Armadilha Clássica: `abort()` vazio quando não deveria ser
+
+Este é o bug mais caro do mercado de pagamentos. Acontece quando um participant faz algo em `prepare()` que deveria ser desfeito em `abort()`, mas `abort()` está vazio:
+
+```java
+// ERRADO — abort() vazio sendo que prepare() enviou ao emissor
+public class ForwardToIssuer implements TransactionParticipant {
+
+    @Override
+    public int prepare(long id, Serializable context) {
+        ISOMsg response = mux.request(request, 30_000); // ← chamou o emissor
+        if (response != null && "00".equals(response.getString(39))) {
+            ctx.put("RESPONSE", response);
+            return PREPARED; // ← debita no emissor, entra na join-list
+        }
+        return ABORTED;
+    }
+
+    @Override
+    public void commit(long id, Serializable context) {
+        // persiste aprovação no banco ✓
+    }
+
+    @Override
+    public void abort(long id, Serializable context) { } // ← BUG: emissor debitou, mas não há reversal
+}
+```
+
+**O que acontece:** `ForwardToIssuer` recebe `00` do emissor (débito efetuado), retorna `PREPARED`. O participant seguinte (`AuditLog`, por exemplo) falha e retorna `ABORTED`. O TM chama `ForwardToIssuer.abort()` — que não faz nada. O portador foi debitado, mas a transação nunca é registrada. **Descasamento financeiro.**
+
+**Correto:**
+
+```java
+public class ForwardToIssuer implements TransactionParticipant {
+
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        ISOMsg request = ctx.get("REQUEST");
+
+        try {
+            ISOMsg response = mux.request(request, 30_000);
+            if (response == null) {
+                ctx.put("RESPONSE_CODE", "68"); // Response received too late
+                return ABORTED;
+            }
+            ctx.put("RESPONSE", response);
+            ctx.put("ISSUER_RC", response.getString(39));
+
+            // Só retorna PREPARED se aprovou — débito aconteceu
+            if ("00".equals(response.getString(39))) {
+                return PREPARED; // ← abort() DEVE enviar reversal se chamado
+            }
+            return ABORTED; // negado → nada a desfazer
+
+        } catch (Exception e) {
+            ctx.put("RESPONSE_CODE", "96");
+            return ABORTED;
+        }
+    }
+
+    @Override
+    public void commit(long id, Serializable context) {
+        // Débito já aconteceu no emissor, persiste localmente
+        Context ctx = (Context) context;
+        auditService.recordApproval(ctx.get("REQUEST"), ctx.get("RESPONSE"));
+    }
+
+    @Override
+    public void abort(long id, Serializable context) {
+        // prepare() aprovou → emissor debitou → abort() DEVE reverter
+        Context ctx = (Context) context;
+        ISOMsg request = ctx.get("REQUEST");
+        if (request == null) return;
+
+        try {
+            ISOMsg reversal = buildReversal(request);
+            // Envia reversal ao emissor (com retry)
+            ISOMsg reversalResponse = mux.request(reversal, 30_000);
+            ctx.put("REVERSAL_SENT", Boolean.TRUE);
+            log.warn("ForwardToIssuer.abort() — reversal enviado para txn " + ctx.get("STAN"));
+        } catch (Exception e) {
+            // Se o reversal falhar → grava na fila de pendências para reprocessamento
+            reversalQueue.enqueue(request);
+            log.error("ForwardToIssuer.abort() — reversal falhou, enfileirado", e);
+        }
+    }
+}
+```
+
+---
+
+### Exemplo completo: CheckDuplicate com estado real
+
+```java
+public class CheckDuplicate implements TransactionParticipant {
+
+    // prepare() faz lock otimista no cache de STANs vistos
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        ISOMsg msg = ctx.get("REQUEST");
+
+        try {
+            String stan = msg.getString(11);
+            String tid  = msg.getString(41);
+            String key  = tid + ":" + stan;
+
+            // Tenta inserir — se já existe, é duplicata
+            boolean inserted = duplicateCache.putIfAbsent(key, id);
+            if (!inserted) {
+                ctx.put("RESPONSE_CODE", "94"); // Duplicate transmission
+                return ABORTED;
+            }
+
+            ctx.put("DUPLICATE_KEY", key); // guarda para abort() poder limpar
+            return PREPARED;
+
+        } catch (ISOException e) {
+            return ABORTED;
+        }
+    }
+
+    @Override
+    public void commit(long id, Serializable context) {
+        // Lock vira entrada permanente — nada a fazer além de deixar no cache
+    }
+
+    @Override
+    public void abort(long id, Serializable context) {
+        // Algum participant seguinte falhou → remove o lock para permitir retry legítimo
+        Context ctx = (Context) context;
+        String key = ctx.get("DUPLICATE_KEY");
+        if (key != null) {
+            duplicateCache.remove(key);
+        }
+    }
+}
+```
+
+---
+
+### Regra de ouro para projetar participants
+
+| O que `prepare()` faz | `commit()` precisa de código? | `abort()` precisa de código? |
+|---|---|---|
+| Só lê dados | Não | Não → use `PREPARED \| READONLY` |
+| Valida e coloca no Context | Não | Não → `commit/abort` vazios são OK |
+| Faz lock / reserva recurso | Às vezes | **Sim** → libera o lock |
+| Persiste em banco (otimista) | **Sim** → confirma | **Sim** → rollback |
+| Chama serviço externo e recebe aprovação | **Sim** → registra | **Sim** → envia reversal |
+| Enfileira mensagem | Às vezes | **Sim** → remove da fila |
+
+> **Se `prepare()` causa efeito colateral externo (débito, lock, fila), `abort()` não pode ser vazio.**
+
+## 4. Context — Passando dados entre participants
 
 ```java
 Context ctx = (Context) context;
@@ -239,7 +467,7 @@ ctx.put("RESPONSE", responseMsg);
 ISOMsg response = ctx.get("RESPONSE");
 ```
 
-## 4. Exemplo: ValidateMessage Participant
+## 5. Exemplo: ValidateMessage Participant
 
 ```java
 public class ValidateMessage implements TransactionParticipant {
@@ -298,7 +526,7 @@ public class ValidateMessage implements TransactionParticipant {
 }
 ```
 
-## 5. Deploy XML do TransactionManager
+## 6. Deploy XML do TransactionManager
 
 ```xml
 <!-- deploy/05_txnmgr.xml -->
@@ -332,7 +560,7 @@ public class ValidateMessage implements TransactionParticipant {
 </txnmgr>
 ```
 
-## 6. GroupSelector — Branching por MTI
+## 7. GroupSelector — Branching por MTI
 
 ```java
 public class QueryHost implements GroupSelector {
@@ -364,7 +592,7 @@ public class QueryHost implements GroupSelector {
 }
 ```
 
-## 7. Exercícios Semana 7
+## 8. Exercícios Semana 7
 
 1. **Implemente 5 participants:** QueryHost, ValidateMessage, RouteByBIN (stub), BuildResponse, AuditLog
 2. **Configure o TransactionManager** no deploy XML

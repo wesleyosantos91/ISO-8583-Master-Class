@@ -160,7 +160,137 @@ Adquirente → Bandeira:  PIN criptografado com ZPK-B
 
 O PIN em claro NUNCA existe fora do HSM.
 
-## 4. PAN Masking — PCI Mindset
+## 4. Como Construir um PIN Block (ISO 9564 Format 0)
+
+O DE 52 carrega o PIN Block — nunca o PIN em claro. Antes de criptografar com a ZPK, o PIN Block é construído em dois passos e um XOR.
+
+### Passo 1: Montar o Bloco PIN (8 bytes / 16 nibbles)
+
+```
+Estrutura:
+  Nibble 1:      0         → identificador de formato (Format 0)
+  Nibble 2:      N         → quantidade de dígitos do PIN (1–12)
+  Nibbles 3–N+2: dígitos do PIN
+  Nibbles N+3–16: padding 0xF
+
+Exemplo — PIN "1234":
+  0  4  1  2  3  4  F  F  F  F  F  F  F  F  F  F
+  ↑  ↑  └──────┘  └────────────────────────────┘
+  |  |  dígitos   padding FFFFFFF
+  |  len=4
+  format=0
+
+Como bytes: 04 12 34 FF FF FF FF FF
+```
+
+### Passo 2: Montar o Bloco PAN (8 bytes / 16 nibbles)
+
+Usa os **12 dígitos centrais** do PAN (excluindo o check digit, contados da direita):
+
+```
+Estrutura:
+  Nibbles 1–4:   0000        → zeros fixos
+  Nibbles 5–16:  12 dígitos mais à direita do PAN, excluindo o último (check digit)
+
+Exemplo — PAN "4532 0151 1283 0366":
+  Remove check digit → "453201511283036" (15 dígitos)
+  Pega os 12 mais à direita → "201511283036"
+
+  0  0  0  0  2  0  1  5  1  1  2  8  3  0  3  6
+  └──────┘  └──────────────────────────────────┘
+   zeros    12 dígitos centrais do PAN
+
+Como bytes: 00 00 20 15 11 28 30 36
+```
+
+### Passo 3: XOR → PIN Block claro
+
+```
+PIN Block:  04 12 34 FF FF FF FF FF
+PAN Block:  00 00 20 15 11 28 30 36
+XOR:        04 12 14 EA EE D7 CF C9
+```
+
+Este resultado (`04 12 14 EA EE D7 CF C9`) é o PIN Block claro.
+Ele é então criptografado com 3DES usando a ZPK → resultado vai no DE 52.
+
+```
+DE 52 = 3DES_Encrypt(ZPK, XOR(PinBlock, PanBlock))
+```
+
+### Por que o PAN entra no XOR?
+
+Vincula criptograficamente o PIN ao cartão. Mesmo que o PIN Block criptografado vaze, ele não pode ser reutilizado em outro PAN — o XOR produziria um PIN errado.
+
+### Implementação Java
+
+```java
+public class PINBlockBuilder {
+
+    /**
+     * Constrói PIN Block Format 0 (ISO 9564).
+     *
+     * @param pin    PIN em texto claro (ex: "1234")
+     * @param pan    PAN completo com check digit (ex: "4532015112830366")
+     * @return       PIN Block de 8 bytes pronto para criptografia
+     */
+    public static byte[] buildFormat0(String pin, String pan) {
+        if (pin == null || pin.length() < 4 || pin.length() > 12)
+            throw new IllegalArgumentException("PIN deve ter 4–12 dígitos");
+        if (pan == null || pan.length() < 13)
+            throw new IllegalArgumentException("PAN inválido");
+
+        // Bloco PIN: 0 + len + dígitos + padding F
+        byte[] pinBlock = new byte[8];
+        char[] pinNibbles = new char[16];
+        pinNibbles[0] = '0';                            // format indicator
+        pinNibbles[1] = (char) ('0' + pin.length());    // PIN length
+        for (int i = 0; i < pin.length(); i++)
+            pinNibbles[2 + i] = pin.charAt(i);
+        for (int i = 2 + pin.length(); i < 16; i++)
+            pinNibbles[i] = 'F';                        // padding
+        for (int i = 0; i < 8; i++)
+            pinBlock[i] = (byte) ((hexVal(pinNibbles[i * 2]) << 4)
+                                 | hexVal(pinNibbles[i * 2 + 1]));
+
+        // Bloco PAN: 0000 + 12 dígitos centrais (sem check digit)
+        String panDigits = pan.substring(pan.length() - 13, pan.length() - 1); // 12 dígitos
+        byte[] panBlock = new byte[8];
+        // 4 nibbles de zero + 12 nibbles do PAN
+        String panHex = "0000" + panDigits;
+        for (int i = 0; i < 8; i++)
+            panBlock[i] = (byte) ((hexVal(panHex.charAt(i * 2)) << 4)
+                                 | hexVal(panHex.charAt(i * 2 + 1)));
+
+        // XOR
+        byte[] result = new byte[8];
+        for (int i = 0; i < 8; i++)
+            result[i] = (byte) (pinBlock[i] ^ panBlock[i]);
+
+        return result;
+    }
+
+    private static int hexVal(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return 0xF; // padding
+    }
+}
+```
+
+**Teste de validação:**
+```java
+byte[] pb = PINBlockBuilder.buildFormat0("1234", "4532015112830366");
+// Esperado: 04 12 14 EA EE D7 CF C9
+assert HexUtils.toHex(pb).equals("041214EAEED7CFC9");
+```
+
+> **Nunca** armazene ou logue o PIN Block claro. O objeto `byte[]` deve ser apagado (`Arrays.fill(pinBlock, (byte)0)`) imediatamente após a criptografia.
+
+---
+
+## 5. PAN Masking — PCI Mindset
 
 ```java
 public class PANMasker {
@@ -191,7 +321,7 @@ public class PANMasker {
 }
 ```
 
-## 5. Exercícios Semana 18
+## 6. Exercícios Semana 18
 
 1. **Implemente PIN Block Format 0** (gerar e validar)
 2. **Implemente PANMasker** com testes extensivos
