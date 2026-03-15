@@ -1,352 +1,365 @@
-# Fase 6 — Produção (Semanas 21-24)
+# Semana 28 — Certificação com Bandeiras e Projeto Final
+
+## 1. Certificação com Bandeiras — O Processo Real
+
+### 1.1 Por que certificar?
+
+Nenhuma instituição pode conectar diretamente ao host da Visa ou Mastercard sem certificação. O processo garante que:
+- O sistema implementa corretamente o protocolo da bandeira
+- Os campos críticos estão corretos (MTI, bitmaps, encoding)
+- Os fluxos de erro são tratados adequadamente
+- A segurança mínima está implementada
+
+### 1.2 Tipos de certificação
+
+| Tipo | Para quem | Processo |
+|------|-----------|----------|
+| Acquirer Host Certification | Adquirente conectando à bandeira | Full test deck |
+| Issuer Host Certification | Emissor recebendo da bandeira | Full test deck |
+| Terminal Certification | Fabricante de POS/ATM | EMVCo + bandeira |
+| Third-party Processor | Processadora intermediária | Depende do arranjo |
+
+### 1.3 Visa — Processo de certificação
+
+```
+1. Contato inicial:
+   - Preencher formulário de onboarding Visa
+   - Designar um Visa Relationship Manager
+   - Receber documentação: VIS (Visa International Specification)
+
+2. Self-assessment:
+   - Equipe técnica estuda o VIS
+   - Implementa os fluxos requeridos
+   - Cria ambiente de teste (Visa fornece BINs de teste)
+
+3. Test deck execution:
+   - Visa fornece conjunto de cenários obrigatórios
+   - Acquirer: ~150-300 cenários
+   - Issuer: ~200-400 cenários
+   - Cada cenário tem: input esperado, campos obrigatórios, output esperado
+
+4. Evidência e documentação:
+   - Logs de cada cenário executado
+   - Comparação esperado vs realizado
+   - Documentação de qualquer desvio com justificativa
+
+5. Revisão pela Visa:
+   - Analista Visa revisa os logs
+   - Pode solicitar re-execução de cenários específicos
+   - Processo: semanas a meses dependendo de complexidade
+
+6. Letter of Approval (LOA):
+   - Visa emite carta de aprovação
+   - Válida por versão da spec implementada
+   - Mudanças significativas podem exigir recertificação
+```
+
+### 1.4 Mastercard — Processo de certificação
+
+```
+Similar ao Visa, com terminologia diferente:
+  - Documento base: Mastercard Transaction Processing Rules + MDES spec
+  - Sistema de testes: MTF (Mastercard Testing Facility)
+  - Cenários: MasterCard Test Cases (MTCs)
+  - Aprovação: Certificate of Compliance
+```
+
+### 1.5 Elo — Certificação brasileira
+
+```
+Processo via Elo Serviços S.A.:
+  - Documentação: Manual de Especificações Técnicas Elo
+  - Ambiente de homologação: Elo fornece endpoint de teste
+  - Cenários: validados pelo time técnico da Elo
+  - Aprovação: Carta de Homologação Elo
+  - Mais ágil que Visa/Master para players brasileiros
+```
 
 ---
 
-# Semana 21 — Observabilidade para Pagamentos
+## 2. Test Deck — O que é e como montar
 
-## 1. As métricas que um switch precisa ter
+### 2.1 Anatomia de um caso de teste
 
-```java
-// Métricas obrigatórias — Micrometer/Prometheus
-public class SwitchMetrics {
-    
-    private final MeterRegistry registry;
-    
-    // LATÊNCIA por MTI e rota
-    public void recordLatency(String mti, String route, boolean approved, long ms) {
-        Timer.builder("iso8583.auth.latency")
-            .tag("mti", mti)
-            .tag("route", route)
-            .tag("result", approved ? "approved" : "declined")
-            .register(registry)
-            .record(ms, TimeUnit.MILLISECONDS);
-    }
-    
-    // VOLUME por MTI e response code
-    public void recordTransaction(String mti, String responseCode, String route) {
-        Counter.builder("iso8583.transactions.total")
-            .tag("mti", mti)
-            .tag("rc", responseCode)
-            .tag("route", route)
-            .tag("on_us", route.equals("ON_US") ? "true" : "false")
-            .register(registry)
-            .increment();
-    }
-    
-    // ERROS — timeouts, reversals, duplicatas
-    public void recordTimeout(String mti, String destination) {
-        Counter.builder("iso8583.timeout.total")
-            .tag("mti", mti)
-            .tag("destination", destination)
-            .register(registry).increment();
-    }
-    
-    // SATURAÇÃO — conexões ativas por destino
-    public void registerConnectionGauge(String destination, AtomicInteger count) {
-        Gauge.builder("iso8583.connections.active", count::get)
-            .tag("destination", destination)
-            .register(registry);
-    }
-}
+```
+Caso de teste: TC-AUTH-001
+  Título:       Compra aprovada — chip, sem PIN, crédito à vista
+  Pré-condição: BIN 453201, saldo disponível > R$ 50
+  Entrada:
+    MTI:    0100
+    DE 2:   4532010000000001
+    DE 3:   000000
+    DE 4:   000000005000  (R$ 50,00)
+    DE 22:  051           (chip inserido)
+    DE 25:  00
+    DE 55:  [dados EMV válidos]
+  Saída esperada:
+    MTI:    0110
+    DE 39:  00
+    DE 38:  [qualquer 6 chars alfanum]
+    DE 55:  [ARPC válido]
+  Critério: Transação aprovada, ARPC gerado, TC gerado pelo chip
 ```
 
-## 2. SLAs quantificados
+### 2.2 Categorias de cenários obrigatórios
 
-| Métrica | Meta | Alerta |
-|---------|------|--------|
-| Auth latency P95 (on-us) | < 150ms | > 300ms |
-| Auth latency P95 (off-us) | < 500ms | > 1000ms |
-| Disponibilidade | 99.99% | Qualquer downtime |
-| Taxa de aprovação | > 85% | < 75% |
-| Taxa de timeout | < 0.1% | > 0.5% |
-| Taxa de reversal | < 0.5% | > 2% |
-| Duplicatas detectadas | N/A | > 1% do volume |
+```
+1. AUTORIZAÇÃO APROVADA:
+   - Chip + sem PIN
+   - Chip + PIN correto
+   - Tarja (fallback de chip)
+   - Contactless
+   - CNP (e-commerce)
+   - Débito aprovado
+   - Crédito aprovado (à vista)
+   - Crédito parcelado
 
-## 3. Logs estruturados
+2. AUTORIZAÇÕES NEGADAS:
+   - Insufficient funds (DE39=51)
+   - Expired card (DE39=54)
+   - Do not honor (DE39=05)
+   - Wrong PIN (DE39=55)
+   - Exceeds withdrawal limit (DE39=61)
+   - Card not activated (DE39=57)
+   - Fraud decline (DE39=59)
 
-```java
-// Formato de log para cada transação
-log.info("txn.processed mti={} stan={} pan={} amount={} rc={} route={} latency_ms={} duplicate={}",
-    msg.getMTI(),
-    msg.getString(11),
-    PANMasker.mask(msg.getString(2)),
-    msg.getString(4),
-    responseCode,
-    route,
-    latencyMs,
-    isDuplicate);
+3. ERROS DE PROTOCOLO:
+   - MTI inválido
+   - Bitmap inconsistente
+   - Campo obrigatório ausente
+   - Formato de campo inválido
+   - Encoding incorreto
+
+4. TIMEOUT E REVERSALS:
+   - Timeout no adquirente → reversal
+   - Reversal após queda de conexão
+   - Late response após reversal enviado
+   - Reversal negado (DE39=76 — not found)
+
+5. NETWORK MANAGEMENT:
+   - Sign-on bem-sucedido
+   - Sign-on recusado
+   - Echo test
+   - Cutover
+
+6. FLUXOS AVANÇADOS:
+   - Pre-authorization + completion
+   - Pre-authorization + cancel
+   - Partial approval
+   - Balance inquiry
+   - Cash advance
 ```
 
-## 4. Exercícios Semana 21
+### 2.3 Mini test deck para o payment-switch-lab
 
-1. **Implemente SwitchMetrics** com todas as métricas listadas
-2. **Adicione logging estruturado** em todos os participants
-3. **Crie queries de investigação** (como se usasse Elasticsearch/Grafana)
-4. **Documente `runbook-observability.md`** com: o que monitorar, thresholds, como investigar
+Implemente no lab pelo menos estes 20 cenários:
 
-### Desafio
-Construa um cenário onde a taxa de aprovação cai de 87% para 62% em 10 minutos. Usando apenas métricas e logs, diagnostique a causa (dica: pode ser emissor fora, BIN errado, timeout, campo inválido, etc.).
+| # | Cenário | MTI | DE39 esperado |
+|---|---------|-----|---------------|
+| 1 | Compra aprovada chip | 0100/0110 | 00 |
+| 2 | Compra aprovada tarja | 0100/0110 | 00 |
+| 3 | Compra aprovada CNP | 0100/0110 | 00 |
+| 4 | Saldo insuficiente | 0100/0110 | 51 |
+| 5 | Cartão expirado | 0100/0110 | 54 |
+| 6 | PIN incorreto | 0100/0110 | 55 |
+| 7 | Do not honor | 0100/0110 | 05 |
+| 8 | Timeout → reversal | 0100 timeout → 0400/0410 | 00 |
+| 9 | Reversal not found | 0400/0410 | 76 |
+| 10 | Duplicate STAN | 0200/0210 | cached response |
+| 11 | Sign-on | 0800/0810 | 00 |
+| 12 | Echo test | 0800/0810 | 00 |
+| 13 | Campo DE 2 ausente | 0100/0110 | 30 |
+| 14 | MTI inválido | - | connection error |
+| 15 | Pre-auth | 0100 (DE25=06) | 00 |
+| 16 | Pre-auth completion | 0200 (DE25=12) | 00 |
+| 17 | Partial approval | 0200/0210 | 10 |
+| 18 | Balance inquiry | 0200/0210 DE3=312000 | 00 |
+| 19 | On-us routing | 0200 → local issuer | 00 |
+| 20 | Off-us routing | 0200 → external | 00 |
 
 ---
 
-# Semana 22 — Troubleshooting Avançado
+## 3. Projeto Final — Mini Switch Completo
 
-## 1. Taxonomia de falhas
+### 3.1 Visão do entregável
 
-| Categoria | Exemplos | Como identificar |
-|-----------|----------|-----------------|
-| **Rede/TCP** | Conexão recusada, timeout TCP, RST | Logs de canal, Wireshark |
-| **Framing** | Header de tamanho errado, bytes sobrando | Hex dump, contagem de bytes |
-| **Encoding** | BCD vs ASCII, EBCDIC vs ASCII | Comparar raw bytes vs valor esperado |
-| **Spec/Packager** | Campo no lugar errado, tamanho errado | Comparar com spec da bandeira |
-| **Bitmap** | Campo presente no bitmap mas ausente nos dados | Parser de bitmap vs dados |
-| **Negócio** | Response code inesperado, decline sem motivo claro | Análise do DE39 e contexto |
-| **Roteamento** | Transação vai pro destino errado | Verificar BIN table e logs de routing |
-
-## 2. Playbook de troubleshooting
+O payment-switch-lab deve ser, ao final desta semana, um sistema que qualquer engenheiro sênior de pagamentos reconheceria como profissional:
 
 ```
-PASSO 1: Qual é o sintoma?
-  - DE39=30 (Format Error) → problema de encoding/spec
-  - DE39=91 (Issuer unavailable) → problema de rede/destino
-  - DE39=96 (System malfunction) → erro interno no receptor
-  - Timeout → problema de rede ou emissor lento
-
-PASSO 2: Isolar o escopo
-  - Afeta todos os terminais ou só alguns?
-  - Afeta todas as bandeiras ou só uma?
-  - Afeta todos os BINs ou só uma faixa?
-  - Começou quando? Mudou algo?
-
-PASSO 3: Analisar a mensagem
-  - Hex dump do request enviado
-  - Hex dump da response (se houver)
-  - Comparar com uma mensagem que funciona (baseline)
-  - Verificar bitmap vs dados presentes
-
-PASSO 4: Reproduzir
-  - Enviar mesma mensagem em ambiente de teste
-  - Testar com outro terminal/BIN/bandeira
-  - Simular com dados de produção (mascarados)
+payment-switch-lab/
+├── src/main/java/
+│   ├── config/          ← Q2 configurações
+│   ├── participants/    ← TransactionParticipants
+│   ├── routing/         ← BIN table + routing engine
+│   ├── security/        ← PAN masking, PIN handling
+│   ├── reconciliation/  ← Reconciliation engine
+│   ├── disputes/        ← Dispute automation
+│   ├── metrics/         ← SwitchMetrics (Micrometer)
+│   └── simulator/       ← Issuer simulator
+├── src/test/
+│   ├── unit/
+│   ├── integration/
+│   └── testdeck/        ← Os 20 cenários acima
+├── deploy/              ← Q2 XML configs
+├── docs/
+│   ├── architecture/    ← C4, ADRs
+│   ├── runbook/         ← Runbook operacional
+│   └── api/             ← Documentação dos campos
+└── README.md            ← README de nível sênior
 ```
 
-## 3. Exercícios Semana 22
+### 3.2 README de nível sênior — O que deve conter
 
-1. **Monte catálogo de 15+ falhas** com: sintoma, causa, diagnóstico, correção
-2. **Crie massa de teste** com mensagens intencionalmente quebradas
-3. **Resolva 5 cenários de incidente** (fornecidos abaixo)
+```markdown
+# Payment Switch Lab
 
-### Cenário A
-Dump: `0200B238000108A18000001945320151128303660030000000001500003141600001234561600000314...`
-A response é DE39=30. Encontre o erro.
+## O que é este projeto
+[2-3 parágrafos explicando o que o sistema faz, para quem e por quê]
 
-### Cenário B
-Todas as transações de BIN `6504xxxx` (Elo Itaú) estão indo off-us pela Elo quando deveriam ser on-us. O que verificar?
+## Arquitetura
+[Diagrama C4 ou Mermaid do sistema]
 
-### Cenário C
-O terminal TERM0099 envia 0800 (echo) com sucesso, mas todas as 0200 retornam timeout. O que está acontecendo?
+## Como rodar
+[Pré-requisitos, instalação, primeiro start — max 5 comandos]
 
-### Cenário D
-Transações com DE22=071 (contactless) estão sendo aprovadas, mas as com DE22=051 (chip contact) do mesmo terminal estão sendo negadas com DE39=55 (PIN errado). O terminal alega que o PIN está correto.
+## Fluxos suportados
+[Tabela: MTI, fluxo, campos obrigatórios]
 
-### Cenário E
-A reconciliação do dia mostra 47 transações autorizadas sem clearing correspondente. Todas são do merchant MERCHANT00042. O que investigar?
+## Test deck
+[Como rodar os 20 cenários de teste]
 
-### Desafio
-Crie um **playbook de incidente** formatado como runbook para o time de operações. Deve cobrir os 10 incidentes mais comuns com: detecção, diagnóstico, resolução, prevenção.
+## Configuração
+[Como configurar BINs, rotas, timeouts]
+
+## Operação
+[Link para runbook, alertas, dashboards]
+
+## Decisões de arquitetura
+[Link para ADRs]
+
+## Roadmap
+[O que falta / próximos passos]
+```
+
+### 3.3 Runbook operacional mínimo
+
+```markdown
+# Runbook — Payment Switch Lab
+
+## Alertas e resposta
+
+### ALERT: auth_latency_p95 > 500ms
+Causa provável: emissor lento ou timeout de rede
+Investigação: verificar logs do QMUX, latência por destino
+Ação: escalar timeout ou ativar stand-in
+
+### ALERT: timeout_rate > 1%
+Causa provável: emissor instável
+Investigação: painel de saúde de canal (0800/0810)
+Ação: verificar canal, disparar sign-on, verificar reversal pendentes
+
+### ALERT: reversal_exhausted
+Causa provável: emissor indisponível por período prolongado
+Investigação: identificar STAN + valor
+Ação: intervenção manual — contatar emissor, força exceção financeira
+
+### ALERT: duplicate_detected
+Causa provável: terminal com bug de retransmissão
+Investigação: terminal ID + volume de duplicatas
+Ação: alertar adquirente do terminal, verificar se há cobrança dupla
+
+## Procedimentos de manutenção
+
+### Deploy sem downtime
+[Passos de rolling deploy com jPOS]
+
+### Rotação de chaves (ZPK/ZAK)
+[Procedimento de key exchange — 0800/DE70=101]
+
+### Backup e recuperação
+[Onde ficam os backups, como restaurar]
+```
+
+### 3.4 Apresentação para diferentes audiências
+
+Você deve conseguir apresentar o mesmo sistema de formas diferentes:
+
+**Para CTO (5 minutos):**
+```
+"Construí um switch de pagamentos ISO 8583 em Java com jPOS.
+Suporta autorização, reversal, clearing e reconciliação.
+Processa em média X TPS com latência P95 de Yms.
+Tem 80%+ de cobertura de testes e runbook operacional completo."
+```
+
+**Para Engenheiro Sênior (30 minutos):**
+- Mostrar arquitetura (C4)
+- Explicar pipeline do TransactionManager
+- Mostrar como roteamento por BIN funciona
+- Demonstrar um cenário de timeout + reversal
+- Mostrar métricas no dashboard
+
+**Para Gerente de Produto (15 minutos):**
+- O que o sistema faz em termos de negócio
+- Quais casos de uso suporta (compra, parcelamento, pré-autorização)
+- Como se encaixa no fluxo de aprovação até pagamento ao lojista
+- Quais são as limitações atuais
+
+**Para Time de Operações (20 minutos):**
+- Como monitorar (dashboard, alertas)
+- O que fazer em cada tipo de incidente
+- Como investigar uma transação específica pelo RRN
+- Como rodar os testes de saúde de canal
 
 ---
 
-# Semana 23 — Reconciliação Real
+## 4. Checklist de Conclusão do Curso
 
-## Foco: Implementar reconciliação que detecta mismatches entre autorização e clearing
+### Fundação
+- [ ] Consigo explicar a jornada POS → Emissor → resposta sem consultar
+- [ ] Sei decompor um MTI e ler um bitmap hexadecimal
+- [ ] Entendo encoding ASCII, BCD, binário na prática
 
-### Exercícios
-1. **Implemente ClearingFileParser** que lê um arquivo de clearing simplificado (CSV com RRN, PAN_last4, amount, date)
-2. **Implemente ReconciliationEngine** completo
-3. **Gere relatório** de exceções: force posts, auth sem clearing, amount mismatch, PAN mismatch
-4. **Calcule totais** para conferência: total autorizado vs total no clearing vs diferença
+### Implementação
+- [ ] payment-switch-lab roda com jPOS + Q2
+- [ ] TransactionManager com pipeline completo implementado
+- [ ] QMUX com correlação e timeout funcionando
+- [ ] Autorização 0100/0110 e 0200/0210 E2E
+- [ ] Roteamento por BIN (on-us / off-us) implementado
+- [ ] Parcelamento nos campos corretos
+- [ ] Auto-reversal por timeout funcionando
+- [ ] Deduplicação com cache TTL funcionando
+- [ ] SAF com drenagem pós-reconexão
 
-### Desafio
-Processe 10.000 autorizações e 9.800 registros de clearing. Identifique e classifique todas as exceções. Monte relatório para o time financeiro.
+### Segurança e Compliance
+- [ ] PAN nunca aparece nos logs sem mascaramento
+- [ ] Track data e PIN nunca armazenados
+- [ ] TLS nas conexões externas
+- [ ] Sei explicar os 12 requisitos PCI-DSS
+- [ ] Entendo scoping e como reduzir o CDE
 
----
+### Especialização
+- [ ] Domino o mercado brasileiro: Elo, arranjos, BACEN, antecipação
+- [ ] Sei implementar pre-auth, incremental, partial approval
+- [ ] Entendo o ciclo completo de chargeback e sei quando defender
+- [ ] Consigo fazer um pentest básico no meu próprio sistema
+- [ ] Sei o que é necessário para certificar com uma bandeira
 
-# Semana 24 — Arquitetura do Switch
+### Operação
+- [ ] Dashboard de métricas (Micrometer/Prometheus)
+- [ ] Runbook operacional com os principais alertas
+- [ ] Consigo diagnosticar um incidente pelo RRN
+- [ ] Documentação de arquitetura (C4 + ADRs)
 
-## Exercícios
-1. **Documente a arquitetura final** do payment-switch-lab em diagrama C4 (Context, Container, Component)
-2. **Escreva ADRs** para as 5 decisões mais importantes:
-   - Por que TransactionManager + Participants?
-   - Por que cache em memória para deduplicação?
-   - Por que timeout de 30s?
-   - Sync vs async para reversal?
-   - Como escalar horizontalmente?
-3. **Diagrama de deployment** com Docker Compose
-4. **Documente trade-offs** explicitamente
-
-### Desafio
-Apresente a arquitetura para 3 audiências (escreva o pitch para cada):
-1. Arquiteto — foco em decisões técnicas e trade-offs
-2. Gerente/Head — foco em risco, custo e prazo
-3. Time de operações — foco em monitoramento e manutenção
-
----
-
-# Fase 7 — Especialização (Semanas 25-28)
-
----
-
-# Semana 25 — Mercado Brasileiro
-
-## 1. Estude e documente
-
-- **Arranjos de pagamento:** Lei 12.865/2013, papel do BACEN
-- **Elo:** Quem são os donos (BB, Bradesco, Caixa), specs próprias
-- **Hiper/Hipercard:** Bandeira Itaú, processamento on-us
-- **Sub-adquirência:** PagSeguro, Mercado Pago, iFood, Ifood
-- **Teto de interchange:** Circular BACEN para débito (0.5%)
-- **Antecipação de recebíveis:** O que é, regulação, registradoras (CIP, TAG, CERC)
-- **PIX vs Cartão:** Onde competem, onde coexistem
-
-## 2. Exercícios
-
-1. **Desenhe o fluxo** de uma transação sub-adquirente: POS iFood → Stone (adquirente) → Visa → Itaú
-2. **Calcule a diferença de receita** entre on-us Hiper vs off-us Visa para o Itaú
-3. **Documente 10 diferenças** entre o ecossistema de cartões BR vs EUA
-
-### Desafio
-Escreva um artigo técnico (LinkedIn-ready) explicando por que parcelamento sem juros é uma peculiaridade brasileira e como impacta a infraestrutura técnica de pagamentos. Mínimo 800 palavras.
+### Portfólio
+- [ ] README de nível sênior no GitHub
+- [ ] Consigo apresentar o projeto para CTO em 5 minutos
+- [ ] Consigo apresentar para engenheiro sênior em 30 minutos
 
 ---
 
-# Semana 26 — Fluxos Avançados
+## Resumo do Curso
 
-## 1. Implemente
+Você completou 28 semanas (+ fases extras). O que você construiu é real, não acadêmico — é o tipo de sistema que adquirentes e processadoras rodam em produção.
 
-### Pre-authorization
-```
-0100 DE25=06 → Pre-auth R$ 2.000 (hotel check-in)
-0200 DE25=06 → Completion R$ 1.500 (checkout)
-0400 → Reversal da diferença (se necessário)
-```
-
-### Incremental Authorization
-```
-0100 #1 → Pre-auth R$ 2.000
-0100 #2 → Incremental +R$ 500 (referencia #1)
-0200 → Completion R$ 2.300
-```
-
-### Partial Approval
-```
-0100 DE4=10000 → Request R$ 100
-0110 DE4=7500 DE39=10 → Approved R$ 75 (partial)
-Terminal: "Aprovado parcial. Deseja pagar R$ 25 com outro meio?"
-```
-
-### Balance Inquiry
-```
-0100 DE3=300000 → Consulta saldo
-0110 DE39=00 DE54=1001986C000001500000 → Saldo R$ 15.000,00
-```
-
-## 2. Exercícios
-
-1. **Implemente cada fluxo** no payment-switch-lab
-2. **Teste cenário de hotel completo:** check-in → minibar → checkout
-3. **Teste partial approval:** terminal lida corretamente com valor reduzido
-4. **Implemente balance inquiry** com DE 54
-
-### Desafio
-Monte um cenário complexo: locadora de veículos. Pre-auth de R$ 5.000, cliente devolve carro com dano (incremental +R$ 2.000), paga R$ 4.500 no checkout, R$ 2.500 fica como chargeback potencial. Quais mensagens são trocadas?
-
----
-
-# Semana 27 — Certificação e ISO 20022
-
-## 1. Certificação com Bandeiras
-
-- **Test deck:** Conjunto de ~200-500 cenários de teste
-- Cada cenário: "envie esta mensagem, espere esta resposta"
-- Inclui: happy path, declines, reversals, timeouts, EMV, contactless, recurring
-- **Precisa passar 100%** para ir a produção
-
-## 2. ISO 20022 — O Futuro
-
-- XML/JSON based (vs binário do ISO 8583)
-- Visa e Mastercard migrando clearing para ISO 20022
-- PIX já é ISO 20022 nativo
-- Mapeamento ISO 8583 ↔ ISO 20022 é habilidade valiosa
-
-```
-ISO 8583 DE 2 (PAN) → ISO 20022 /AcctId/IBAN ou /Acct/Id/Othr/Id
-ISO 8583 DE 4 (Amount) → ISO 20022 /IntrBkSttlmAmt
-ISO 8583 DE 39 (Response Code) → ISO 20022 /TxSts
-```
-
-## 3. Exercícios
-
-1. **Crie um "mini test deck"** com 30 cenários e implemente runner automático
-2. **Documente o processo de certificação** Visa e Mastercard (públicamente disponível)
-3. **Mapeie 10 campos** ISO 8583 → ISO 20022
-
-### Desafio
-Rode seu mini test deck contra o payment-switch-lab. Quantos cenários passam? Corrija os que falham. Meta: 100%.
-
----
-
-# Semana 28 — Projeto Final
-
-## Entregáveis
-
-### 1. Mini-switch funcional
-- [ ] 0800/0810 (echo, sign-on)
-- [ ] 0200/0210 (autorização single message)
-- [ ] 0100/0110 (autorização dual message)
-- [ ] 0400/0410 (reversal)
-- [ ] 0220/0230 (advice)
-- [ ] Roteamento por BIN (on-us/off-us)
-- [ ] Parcelamento (DE 48/60/63)
-- [ ] Deduplicação
-- [ ] Auto-reversal por timeout
-- [ ] Health check de canais
-- [ ] Logs mascarados (PCI)
-- [ ] Métricas (latência, volume, RC, timeouts)
-
-### 2. Documentação
-- [ ] README técnico completo
-- [ ] ARCHITECTURE.md com C4 e ADRs
-- [ ] Runbook operacional
-- [ ] Catálogo de response codes
-- [ ] Playbook de troubleshooting
-- [ ] Glossário de 50+ termos
-- [ ] Diagrama da jornada end-to-end
-
-### 3. Testes
-- [ ] > 80% de cobertura
-- [ ] Testes unitários por participant
-- [ ] Testes de integração E2E
-- [ ] Mini test deck com 30+ cenários
-- [ ] Testes de falha (timeout, conexão down, duplicata)
-
-### 4. Apresentação
-Prepare apresentação do sistema para:
-- [ ] Arquiteto (10 min — decisões técnicas)
-- [ ] Head de produto (5 min — valor de negócio)
-- [ ] Time de operações (10 min — como monitorar e operar)
-- [ ] Desenvolvedor júnior (15 min — como funciona)
-
-### Exercício Final
-Resolva este incidente simulado do início ao fim:
-
-> "Às 14:32 de sexta-feira, o monitoring alertou que a taxa de timeout subiu de 0.1% para 15% em transações off-us via Visa. Transações on-us e Mastercard estão normais. O time de negócio está cobrando — é Black Friday e estamos perdendo vendas."
-
-1. Qual sua primeira ação?
-2. Que dados pede?
-3. Qual seu diagnóstico inicial?
-4. Qual a correção?
-5. Como prevenir no futuro?
-6. Como comunica ao negócio?
-
-Documente tudo como se fosse um RCA (Root Cause Analysis) real.
+**O próximo passo:** Contribua para o jPOS (open source), escreva sobre o que aprendeu, e apareça nas comunidades de pagamentos. Especialistas de referência no mercado não são apenas bons tecnicamente — eles compartilham conhecimento.
