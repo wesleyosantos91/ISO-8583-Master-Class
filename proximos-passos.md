@@ -89,195 +89,349 @@ Mensagem de exemplo (nexo FAST — autorização):
 
 ---
 
-## Trilha 2 — Frameworks e Outras Linguagens
+## Trilha 2 — Go e Python no Ecossistema ISO 8583
 
-O ecossistema de pagamentos não é exclusivo do Java/jPOS. Conhecer os frameworks e linguagens usados por outras empresas do setor amplia oportunidades e permite contribuir em projetos internacionais.
+Java/jPOS é o padrão em bancos e processadoras tradicionais. Fintechs modernas e times de risco usam Go e Python. Conhecer as três linguagens te permite transitar entre qualquer empresa do setor — e as três têm bibliotecas ISO 8583 compatíveis.
 
-### Go — A Linguagem das Fintechs Modernas
-
-**Prioridade:** 🔴 Alta — Nubank, Stripe, Square, Mercado Pago usam Go extensivamente
-**Pré-requisito:** Lógica de programação sólida (Java do curso é suficiente)
-**Horizonte:** 2-3 meses para produtividade básica
-
-```
-Por que Go dominou fintechs:
-  → Compilado, tipado, sem JVM overhead
-  → Goroutines: concorrência nativa para alto volume de I/O
-  → Tempo de startup < 50ms (crítico para lambdas/serverless)
-  → Binário único, deploy trivial em container
-
-Equivalências com o que você já sabe (Java → Go):
-  TransactionParticipant   → interface com método Execute()
-  CompletableFuture        → goroutine + channel
-  synchronized block       → sync.Mutex / sync.RWMutex
-  Optional<T>              → (T, error) — idioma Go
-  ThreadPoolExecutor       → worker pool com goroutines
-
-Implementação de parser ISO 8583 em Go:
-  // Biblioteca principal: moov-io/iso8583
-  import "github.com/moov-io/iso8583"
-
-  spec := iso8583.NewSpec(...)
-  msg := iso8583.NewMessage(spec)
-  msg.MTI("0200")
-  msg.Field(2, "4111111111111111")   // PAN
-  msg.Field(4, "000000015000")       // Amount
-  packed, err := msg.Pack()
-
-Frameworks de switch em Go:
-  moov-io/iso8583  — biblioteca ISO 8583 amplamente usada
-  moov-io/wire     — mensageria SWIFT/Fedwire
-  google/wire      — injeção de dependência (substituição do Spring DI)
-```
-
-**Onde Go é usado em pagamentos no Brasil:**
-- Nubank — core bancário e microsserviços de autorização
-- PicPay — gateway de pagamentos
-- Pismo — core banking SaaS (adquirido pelo Visa)
+A referência de biblioteca usada aqui é a mesma família `moov-io` para Go e `pyiso8583` para Python — ambas seguem a mesma filosofia: spec configurável por campo, pack/unpack simétrico, sem dependências pesadas.
 
 ---
 
-### Python — Antifraude, Analytics e Automação
+### Go — Fintechs de Alto Volume
 
-**Prioridade:** 🔴 Alta para quem quer trabalhar com risco/fraude
+**Prioridade:** 🔴 Alta — Nubank, Pismo, PicPay, Stripe usam Go em pagamentos
+**Pré-requisito:** Java do curso é suficiente para a transição
+**Horizonte:** 2-3 meses para produtividade real
+**Biblioteca:** `github.com/moov-io/iso8583`
+
+#### Setup
+
+```bash
+go mod init payment-switch
+go get github.com/moov-io/iso8583
+```
+
+#### Spec — equivalente ao packager XML do jPOS
+
+```go
+// spec/brasil.go
+package spec
+
+import (
+    "github.com/moov-io/iso8583/encoding"
+    "github.com/moov-io/iso8583/field"
+    "github.com/moov-io/iso8583/prefix"
+    iso "github.com/moov-io/iso8583"
+)
+
+var Brasil = &iso.MessageSpec{
+    Name: "ISO 8583 Brasil",
+    Fields: map[int]field.Spec{
+        0: {Description: "MTI",        Length: 4,  Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+        2: {Description: "PAN",        Length: 19, Enc: encoding.ASCII, Pref: prefix.ASCII.LL},
+        3: {Description: "Proc Code",  Length: 6,  Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+        4: {Description: "Amount",     Length: 12, Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+        11: {Description: "STAN",      Length: 6,  Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+        39: {Description: "Resp Code", Length: 2,  Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+        41: {Description: "Terminal",  Length: 8,  Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+        42: {Description: "Merchant",  Length: 15, Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+        49: {Description: "Currency",  Length: 3,  Enc: encoding.ASCII, Pref: prefix.ASCII.Fixed},
+    },
+}
+```
+
+#### Auth Request 0200 — mesmo fluxo da semana 10
+
+```go
+// Montar 0200 (equivalente ao ISOMsg em jPOS)
+func BuildAuthRequest(pan, amount, stan, terminal, merchant string) (*iso8583.Message, error) {
+    msg := iso8583.NewMessage(spec.Brasil)
+    if err := msg.MTI("0200"); err != nil {
+        return nil, err
+    }
+    msg.Field(2, pan)
+    msg.Field(3, "000000")   // compra à vista
+    msg.Field(4, amount)     // 12 dígitos, centavos: R$150,00 = "000000015000"
+    msg.Field(11, stan)
+    msg.Field(41, terminal)
+    msg.Field(42, merchant)
+    msg.Field(49, "986")     // BRL
+    return msg, nil
+}
+
+// Pack para envio TCP
+func PackMessage(msg *iso8583.Message) ([]byte, error) {
+    packed, err := msg.Pack()
+    if err != nil {
+        return nil, fmt.Errorf("pack error: %w", err)
+    }
+    // Header de 4 bytes com tamanho (mesmo padrão NACChannel do jPOS)
+    header := make([]byte, 4)
+    binary.BigEndian.PutUint32(header, uint32(len(packed)))
+    return append(header, packed...), nil
+}
+```
+
+#### Unpack da resposta 0210
+
+```go
+func ParseAuthResponse(raw []byte) (responseCode string, authCode string, err error) {
+    msg := iso8583.NewMessage(spec.Brasil)
+    if err = msg.Unpack(raw[4:]); err != nil { // pula header de 4 bytes
+        return
+    }
+    mti, _ := msg.GetMTI()
+    if mti != "0210" {
+        err = fmt.Errorf("MTI inesperado: %s", mti)
+        return
+    }
+    responseCode, _ = msg.GetString(39)
+    authCode, _ = msg.GetString(38)
+    return
+}
+```
+
+#### Concorrência — goroutines vs threads jPOS
+
+```go
+// jPOS: TransactionManager cria threads por sessão
+// Go: goroutines são muito mais leves (~2KB vs ~1MB por thread)
+
+func ProcessTransactions(requests <-chan *iso8583.Message, results chan<- *iso8583.Message) {
+    sem := make(chan struct{}, 500) // semáforo: max 500 goroutines simultâneas
+    for req := range requests {
+        sem <- struct{}{}
+        go func(r *iso8583.Message) {
+            defer func() { <-sem }()
+            resp, err := forwardToIssuer(r)
+            if err != nil {
+                resp = buildDecline(r, "91") // emissor indisponível
+            }
+            results <- resp
+        }(req)
+    }
+}
+
+// Timeout — equivalente ao mux.request(req, 30000) do jPOS
+func forwardToIssuer(req *iso8583.Message) (*iso8583.Message, error) {
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    // envio via conn TCP + aguarda correlação por STAN
+    return issuerConn.Send(ctx, req)
+}
+```
+
+#### Onde Go é usado em pagamentos no Brasil
+
+```
+Nubank   — core bancário, microsserviços de autorização e fraude
+Pismo    — core banking SaaS (adquirido pelo Visa em 2023)
+PicPay   — gateway de pagamentos e carteira digital
+Conductor — emissor de cartões (ex-Visa)
+```
+
+---
+
+### Python — Risco, Analytics e Automação
+
+**Prioridade:** 🔴 Alta para times de risco, data science e automação
 **Pré-requisito:** Fase 9 (antifraude) para contextualizar os casos de uso
-**Horizonte:** 2-3 meses para uso em pagamentos
+**Horizonte:** 2-3 meses para uso focado em pagamentos
+**Biblioteca:** `pyiso8583` — mesma filosofia spec/pack/unpack da moov-io
 
+#### Setup
+
+```bash
+pip install pyiso8583 pandas xgboost scikit-learn
 ```
-Onde Python entra no ecossistema de pagamentos:
 
-  1. Antifraude e ML:
-     → Treinamento de modelos (scikit-learn, XGBoost, LightGBM)
-     → Feature engineering em datasets de transações
-     → Análise de fraude histórica (pandas + jupyter)
+#### Spec — mesmo conceito do packager, em dicionário Python
 
-  2. Reconciliação e analytics:
-     → Processar arquivos de clearing (CSV, XML, CNAB)
-     → Cruzar bases de dados entre sistemas legados
-     → Relatórios financeiros automáticos
+```python
+# spec/brasil.py
+from pyiso8583.specs import default_ascii
 
-  3. Automação e testes:
-     → Scripts de load test (locust.io)
-     → Parsers de dump de mensagens ISO 8583
-     → Automação de certificação (envio de test deck)
+# Estende a spec padrão ASCII com campos brasileiros
+BRASIL_SPEC = {**default_ascii}
 
-Biblioteca ISO 8583 em Python:
-  # pyiso8583 — parser/packer puro Python
-  import pyiso8583
-  from pyiso8583.specs import default_ascii as spec
+# Customiza comprimentos e tipos conforme spec Elo/Visa BR
+BRASIL_SPEC["t"]  = {"data_enc": "ascii", "len_type": 0, "max_len": 4}   # MTI
+BRASIL_SPEC["2"]  = {"data_enc": "ascii", "len_type": 2, "max_len": 19}  # PAN (LLVAR)
+BRASIL_SPEC["3"]  = {"data_enc": "ascii", "len_type": 0, "max_len": 6}   # Processing Code
+BRASIL_SPEC["4"]  = {"data_enc": "ascii", "len_type": 0, "max_len": 12}  # Amount
+BRASIL_SPEC["11"] = {"data_enc": "ascii", "len_type": 0, "max_len": 6}   # STAN
+BRASIL_SPEC["39"] = {"data_enc": "ascii", "len_type": 0, "max_len": 2}   # Response Code
+BRASIL_SPEC["41"] = {"data_enc": "ascii", "len_type": 0, "max_len": 8}   # Terminal ID
+BRASIL_SPEC["42"] = {"data_enc": "ascii", "len_type": 0, "max_len": 15}  # Merchant ID
+```
 
-  raw = b"02004000000000000000..."
-  decoded, encoded = pyiso8583.decode(raw, spec)
-  print(decoded["t"])   # MTI: 0200
-  print(decoded["2"])   # PAN
+#### Montar e parsear 0200/0210 — mesmos campos da semana 10
 
-Pipeline de ML para antifraude (exemplo):
-  import xgboost as xgb
-  import pandas as pd
+```python
+import pyiso8583
+from spec.brasil import BRASIL_SPEC
 
-  # Features: hora, valor, MCC, BIN, país, device_type
-  X = transactions[["hour", "amount", "mcc", "bin_country", ...]]
-  y = transactions["is_fraud"]  # label: chargeback confirmado
+# Montar auth request — equivalente ao ISOMsg.set() do jPOS
+def build_auth_request(pan: str, amount: str, stan: str,
+                        terminal: str, merchant: str) -> bytes:
+    msg = {
+        "t":  "0200",
+        "2":  pan,
+        "3":  "000000",   # compra à vista
+        "4":  amount,     # centavos: R$150,00 = "000000015000"
+        "11": stan,
+        "41": terminal,
+        "42": merchant,
+        "49": "986",      # BRL
+    }
+    _, packed = pyiso8583.encode(msg, BRASIL_SPEC)
+    return packed
 
-  model = xgb.XGBClassifier(
-      n_estimators=500,
-      max_depth=6,
-      learning_rate=0.05,
-      scale_pos_weight=99   # dataset desbalanceado (1% fraude)
-  )
-  model.fit(X_train, y_train)
-  # Score em produção via ONNX (interop com Java/Go)
+# Parsear resposta 0210
+def parse_auth_response(raw: bytes) -> dict:
+    decoded, _ = pyiso8583.decode(raw, BRASIL_SPEC)
+    assert decoded["t"] == "0210", f"MTI inesperado: {decoded['t']}"
+    return {
+        "response_code": decoded.get("39"),
+        "auth_code":     decoded.get("38"),
+        "stan":          decoded.get("11"),
+    }
+```
+
+#### Caso de uso 1 — Analisar dump de mensagens ISO 8583 de produção
+
+```python
+import pandas as pd
+
+# Processar arquivo de log com mensagens capturadas
+def analyze_decline_dump(log_file: str) -> pd.DataFrame:
+    records = []
+    with open(log_file) as f:
+        for line in f:
+            raw = bytes.fromhex(line.strip())
+            try:
+                decoded, _ = pyiso8583.decode(raw, BRASIL_SPEC)
+                if decoded.get("t") in ("0110", "0210"):
+                    records.append({
+                        "mti":           decoded["t"],
+                        "pan_masked":    decoded["2"][:6] + "****" + decoded["2"][-4:],
+                        "amount":        int(decoded.get("4", "0")) / 100,
+                        "response_code": decoded.get("39"),
+                        "terminal":      decoded.get("41"),
+                        "merchant":      decoded.get("42"),
+                    })
+            except Exception:
+                continue
+
+    df = pd.DataFrame(records)
+    print(df.groupby("response_code")["amount"].agg(["count", "sum"]))
+    return df
+```
+
+#### Caso de uso 2 — Velocity rules em Python (mesmo conceito da semana 31)
+
+```python
+import redis
+import time
+
+r = redis.Redis()
+
+def check_velocity(pan: str, amount_cents: int) -> dict:
+    now = int(time.time())
+    key_count  = f"vel:count:{pan}"
+    key_amount = f"vel:amount:{pan}"
+
+    pipe = r.pipeline()
+    # Janela deslizante de 1 hora — mesmo padrão do Redis sorted set
+    pipe.zremrangebyscore(key_count, 0, now - 3600)
+    pipe.zadd(key_count, {f"{now}:{id(pan)}": now})
+    pipe.zcard(key_count)
+    pipe.zremrangebyscore(key_amount, 0, now - 3600)
+    pipe.zadd(key_amount, {str(now): amount_cents})
+    pipe.zscore(key_amount, str(now))
+    results = pipe.execute()
+
+    txn_count = results[2]
+    # soma acumulada (simplificado)
+    total_amount = sum(
+        int(r.zscore(key_amount, m) or 0)
+        for m in r.zrange(key_amount, 0, -1)
+    )
+    return {
+        "blocked":      txn_count > 10 or total_amount > 500_00,
+        "txn_count_1h": txn_count,
+        "amount_1h":    total_amount / 100,
+    }
+```
+
+#### Caso de uso 3 — ML para score de fraude (semana 31 em produção)
+
+```python
+import xgboost as xgb
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import precision_score, recall_score
+
+# Features derivadas dos campos ISO 8583 que você já conhece
+def extract_features(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({
+        "amount":          df["4"].astype(int) / 100,
+        "hour":            pd.to_datetime(df["7"], format="%m%d%H%M%S").dt.hour,
+        "mcc":             df["18"].astype(int),
+        "entry_mode":      df["22"].str[:2].astype(int),  # DE22 — semana 9
+        "is_cnp":          df["22"].str[0] == "0",         # CNP se POS entry 01/10
+        "bin":             df["2"].str[:6].astype(int),
+        "terminal_id":     df["41"].str.strip(),
+    })
+
+# Treinar modelo — label: chargeback confirmado (reason code 10.x)
+X = extract_features(transactions)
+y = transactions["is_fraud"]
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+model = xgb.XGBClassifier(
+    n_estimators=500,
+    max_depth=6,
+    learning_rate=0.05,
+    scale_pos_weight=99,  # ~1% de fraude no dataset
+    eval_metric="aucpr",
+)
+model.fit(X_train, y_train, eval_set=[(X_test, y_test)])
+
+# Precision vs Recall — conceito da semana 32
+y_pred = model.predict(X_test)
+print(f"Precision: {precision_score(y_test, y_pred):.3f}")  # falsos positivos
+print(f"Recall:    {recall_score(y_test, y_pred):.3f}")     # fraude passando
+
+# Exportar para ONNX — scoring em produção dentro do Java/Go
+import onnxmltools
+onnx_model = onnxmltools.convert_xgboost(model)
+onnxmltools.save_model(onnx_model, "fraud_model.onnx")
 ```
 
 ---
 
-### Kotlin — O Futuro do Ecossistema Java/jPOS
-
-**Prioridade:** 🟠 Média — interop total com Java, adoção crescente em fintechs
-**Pré-requisito:** Java sólido (você já tem)
-**Horizonte:** 1-2 meses (transição suave para quem já domina Java)
+### Comparativo — Java/jPOS vs Go vs Python
 
 ```
-Por que Kotlin em pagamentos:
-  → 100% interoperável com Java — roda no mesmo jPOS
-  → Null safety nativa: elimina NPE em campos ISO opcionais
-  → Coroutines: melhor que threads para I/O assíncrono
-  → Data classes: modelos de mensagem mais limpos
-  → Extension functions: adicionar métodos ao ISOMsg sem herança
-
-Exemplo: TransactionParticipant em Kotlin vs Java
-
-  // Java (verboso)
-  public class ValidationParticipant implements TransactionParticipant {
-      public int prepare(long id, Serializable ctx) {
-          Context context = (Context) ctx;
-          ISOMsg req = (ISOMsg) context.get("REQUEST");
-          String pan = req.getString(2);
-          if (pan == null || pan.isEmpty()) return ABORTED;
-          return PREPARED;
-      }
-  }
-
-  // Kotlin (conciso, null-safe)
-  class ValidationParticipant : TransactionParticipant {
-      override fun prepare(id: Long, ctx: Serializable): Int {
-          val context = ctx as Context
-          val req = context["REQUEST"] as ISOMsg
-          val pan = req.getString(2) ?: return ABORTED
-          return PREPARED
-      }
-  }
-
-Coroutines para chamadas ao emissor:
-  suspend fun forwardToIssuer(req: ISOMsg): ISOMsg? =
-      withTimeout(30_000) {
-          mux.request(req, 30_000)
-      }
-  // Sem bloquear thread — 10x mais eficiente que thread pool
+Conceito do curso      Java/jPOS              Go                    Python
+────────────────────────────────────────────────────────────────────────────
+Spec de campos         packager XML           MessageSpec struct     dicionário BRASIL_SPEC
+Montar mensagem        ISOMsg.set(2, pan)     msg.Field(2, pan)      msg["2"] = pan
+Pack/Unpack            msg.pack() / unpack()  msg.Pack() / Unpack()  encode() / decode()
+TransactionParticipant interface prepare()    interface Execute()    função Python pura
+Correlação STAN        QMUX interno           channel + map          asyncio + dict
+Velocity rules         Redis + Java           Redis + Go             Redis + Python
+Score de fraude        FraudScreeningPart.    middleware Go          XGBoost → ONNX
 ```
 
----
-
-### Rust — Alta Performance e Segurança de Memória
-
-**Prioridade:** 🟢 Nicho — mas emergindo em infraestrutura crítica de pagamentos
-**Pré-requisito:** Sólida base em C/sistemas (ou muito interesse em aprender)
-**Horizonte:** 6-12 meses para produtividade real
+**Onde cada linguagem domina:**
 
 ```
-Onde Rust aparece em pagamentos:
-  → HSM e criptografia de baixo nível (substituindo C)
-  → Parsers de protocolo de alta performance
-  → Firmware de terminal (sem GC, sem runtime overhead)
-  → Infraestrutura de rede (substituindo C++ em load balancers)
-
-Vantagem única para pagamentos:
-  → Sem garbage collector → sem GC pause → P99 previsível
-  → Memory safety em tempo de compilação → menos CVEs
-  → FFI com C → integra com SDKs de HSM legados
-
-Parser ISO 8583 em Rust (exemplo):
-  use iso8583_rs::prelude::*;
-
-  let spec = Spec::new(/* definição de campos */);
-  let raw: &[u8] = &[0x02, 0x00, /* ... */];
-  let msg = Message::parse(raw, &spec)?;
-  let pan = msg.field(2)?;  // Result<&str, Error>
-```
-
----
-
-### Comparativo: Quando Usar Cada Linguagem
-
-```
-Linguagem   Melhor para em pagamentos           Usado por
-──────────────────────────────────────────────────────────
-Java/jPOS   Switch completo, protocolo ISO 8583  Cielo, Rede, bancos tradicionais
-Go          Microsserviços, gateway de alto TPS  Nubank, Pismo, Stripe
-Python      ML/antifraude, analytics, scripts    Times de risco, data science
-Kotlin      Migração de Java, Android Pay        Fintechs modernas com JVM
-Rust        HSM, firmware, infraestrutura crítica Fabricantes de terminal, infra
-C/C++       Kernel EMV, terminal firmware        Ingenico, Verifone, PAX
+Java/jPOS → Switch de produção completo, bancos e processadoras tradicionais
+Go        → Microsserviços de autorização, gateways de alto TPS, fintechs
+Python    → Antifraude com ML, analytics de clearing, scripts de automação
 ```
 
 ---
@@ -542,14 +696,14 @@ O que avaliar na due diligence técnica de uma processadora:
 ```
 SE você quer...                    ESTUDE...
 ─────────────────────────────────────────────────────────
-Trabalhar em fintech moderna       Go + Open Finance (FAPI)
-Maior salário como engenheiro      Go ou Kotlin + ISO 20022
+Trabalhar em fintech moderna       Go (moov-io/iso8583)
+Maior salário como engenheiro      Go + ISO 20022
 Consultoria independente           QSA (PCI-DSS)
 Entender o futuro do Brasil        DREX + ISO 20022
-Trabalhar com antifraude           Python (ML) + XGBoost
+Trabalhar com antifraude/ML        Python (XGBoost + pyiso8583)
+Analytics e reconciliação          Python (pandas + pyiso8583)
 Sair do Brasil                     ISO 20022 + Go + SWIFT gpi
-Trabalhar com hardware/terminal    EMV Kernel (C/C++) + Rust
-Migrar o Java existente            Kotlin (transição suave)
+Trabalhar com hardware/terminal    EMV Kernel (C/C++)
 Virar CTO/VP                       Produto + M&A técnica
 ```
 
