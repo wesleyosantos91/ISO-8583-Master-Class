@@ -183,21 +183,21 @@ t+D30  Portador recebe fatura
 
 ```mermaid
 sequenceDiagram
-    participant P as "Portador"
-    participant POS as "Terminal POS"
-    participant ACQ as "Adquirente (Cielo)"
-    participant NET as "Bandeira (Visa)"
-    participant ISS as "Emissor (Itaú)"
+    participant P as Portador
+    participant POS as Terminal POS
+    participant ACQ as Adquirente Cielo
+    participant NET as Bandeira Visa
+    participant ISS as Emissor Itau
 
     P->>POS: Insere cartão
-    POS->>POS: Lê chip (EMV)
+    POS->>POS: Lê chip EMV
     POS->>ACQ: 0200 Financial Request
     ACQ->>ACQ: Valida formato
     ACQ->>NET: 0100 Authorization Request
-    NET->>NET: Identifica emissor (BIN)
+    NET->>NET: Identifica emissor BIN
     NET->>ISS: 0100 Authorization Request
     ISS->>ISS: Valida ARQC, saldo e fraude
-    ISS-->>NET: 0110 Authorization Response (DE39=00)
+    ISS-->>NET: 0110 Authorization Response DE39=00
     NET-->>ACQ: 0110 Authorization Response
     ACQ-->>POS: 0210 Financial Response
     POS->>POS: Chip valida ARPC e gera TC
