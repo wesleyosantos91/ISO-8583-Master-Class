@@ -4,16 +4,16 @@
    ╔══════════════════════════════════════════════════════════════╗
    ║        ISO 8583 MASTERCLASS — PAYMENTS SPECIALIST           ║
    ║                                                              ║
-   ║   30 semanas · Java 25 · jPOS · Mercado Brasileiro          ║
-   ║   Do zero ao nível de quem lidera decisões em pagamentos     ║
+   ║   36 semanas · Java 25 · jPOS · Mercado Brasileiro          ║
+   ║   Do zero à referência de mercado em pagamentos             ║
    ╚══════════════════════════════════════════════════════════════╝
 ```
 
 ## O que é esta masterclass?
 
-Um programa de formação completa para se tornar **especialista em mensageria de pagamentos com cartões**, cobrindo ISO 8583, autorização, clearing, settlement, chargebacks e o ecossistema brasileiro — tudo implementado em Java com jPOS.
+Um programa de formação completa para se tornar **referência de mercado em mensageria de pagamentos com cartões**, cobrindo ISO 8583, autorização, clearing, settlement, chargebacks, antifraude, performance e o ecossistema brasileiro — tudo implementado em Java com jPOS.
 
-**Não é um curso de "campos ISO".** É uma formação para quem quer ser referência no tema — entender protocolo, negócio, operação e arquitetura de forma integrada.
+**Não é um curso de "campos ISO".** É uma formação para quem quer ser a pessoa que outros especialistas consultam — entender protocolo, negócio, operação, arquitetura e liderança técnica de forma integrada.
 
 ---
 
@@ -25,14 +25,17 @@ Um programa de formação completa para se tornar **especialista em mensageria d
 ├── README.md                     ← Você está aqui
 ├── CHECKLIST.md                  ← Acompanhe seu progresso
 │
-├── fase-01-fundacao/             ← Semanas 1-4: Ecossistema + Protocolo
-├── fase-02-jpos/                 ← Semanas 5-8: jPOS real com TxnManager
-├── fase-03-autorizacao/          ← Semanas 9-12: Auth E2E + On-Us/Off-Us
+├── fase-01-fundacao/             ← Semanas 1-4:   Ecossistema + Protocolo
+├── fase-02-jpos/                 ← Semanas 5-8:   jPOS real com TxnManager
+├── fase-03-autorizacao/          ← Semanas 9-12:  Auth E2E + On-Us/Off-Us
 ├── fase-04-reversal-advice/      ← Semanas 13-16: Reversal + Idempotência
 ├── fase-05-emv-seguranca/        ← Semanas 17-20: EMV + HSM + Clearing
 ├── fase-06-producao/             ← Semanas 21-24: Observabilidade + Troubleshooting
-├── fase-07-especializacao/       ← Semanas 25-28: Brasil + Certificação + Futuro
+├── fase-07-especializacao/       ← Semanas 25-28: Brasil + PCI-DSS + Certificação
 ├── fase-08-chargebacks-disputes/ ← Semanas 29-30: Chargebacks, Disputes e Representment
+├── fase-09-antifraude/           ← Semanas 31-32: Antifraude e Risk Scoring
+├── fase-10-performance/          ← Semana  33:    Performance: 5.000+ TPS
+├── fase-11-lideranca/            ← Semanas 34-36: Liderança, Carreira e Referência
 │
 ├── referencias/                  ← Glossário, Response Codes, Modelo Econômico
 │
@@ -82,14 +85,16 @@ Um programa de formação completa para se tornar **especialista em mensageria d
 | **Fundação** | 1-4 | Ler MTI, bitmap, montar mensagens, explicar auth vs clearing |
 | **Implementador** | 5-12 | Construir auth E2E, rotear por BIN, tratar timeout |
 | **Avançado** | 13-20 | Reversal, EMV, HSM, clearing/settlement, parcelamento |
-| **Especialista** | 21-28 | Diagnosticar incidentes, desenhar switch, falar de negócio |
-| **Expert** | 29-30 | Operar disputes, construir automação de chargebacks, liability shift |
+| **Especialista** | 21-28 | Diagnosticar incidentes, desenhar switch, PCI-DSS, certificação |
+| **Expert** | 29-30 | Operar disputes, automação de chargebacks, liability shift |
+| **Sênior de Referência** | 31-33 | Antifraude em produção, 5.000+ TPS, circuit breaker distribuído |
+| **Referência de Mercado** | 34-36 | RFC/ADR, palestras, contribuição open source, plano de carreira |
 
 ---
 
 ## Meta final
 
-Ao completar as 28 semanas, você terá:
+Ao completar as 36 semanas, você terá:
 
 - [ ] Mini-switch Java com jPOS (TransactionManager + Participants)
 - [ ] Fluxos 0100/0110, 0200/0210, 0400/0410, 0800/0810
@@ -106,3 +111,8 @@ Ao completar as 28 semanas, você terá:
 - [ ] Motor de automação de disputes (chargebacks)
 - [ ] Domínio de reason codes Visa e Mastercard
 - [ ] Implementação de liability shift via 3DS
+- [ ] Engine de antifraude com velocity rules e scoring em tempo real
+- [ ] Switch otimizado para 5.000+ TPS com circuit breaker
+- [ ] RFC e ADRs escritas para decisões arquiteturais reais
+- [ ] Contribuição open source (jPOS ou equivalente)
+- [ ] Plano de carreira para referência de mercado
