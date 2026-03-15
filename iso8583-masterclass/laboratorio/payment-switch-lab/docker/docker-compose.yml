@@ -1,0 +1,44 @@
+# docker-compose.yml — payment-switch-lab
+version: '3.8'
+
+services:
+  switch:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: payment-switch
+    ports:
+      - "8583:8583"
+    networks:
+      - payment-net
+    depends_on:
+      - issuer-simulator
+    healthcheck:
+      test: ["CMD", "echo", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  issuer-simulator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.issuer
+    container_name: issuer-sim
+    ports:
+      - "8584:8583"
+    networks:
+      - payment-net
+
+  # Futuro: Prometheus + Grafana para métricas (Semana 21)
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   volumes:
+  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml
+  #   ports:
+  #     - "9090:9090"
+  #   networks:
+  #     - payment-net
+
+networks:
+  payment-net:
+    driver: bridge
