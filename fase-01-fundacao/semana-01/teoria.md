@@ -183,11 +183,11 @@ t+D30  Portador recebe fatura
 
 ```mermaid
 sequenceDiagram
-    participant P as Portador
-    participant POS as Terminal POS
-    participant ACQ as Adquirente (Cielo)
-    participant NET as Bandeira (Visa)
-    participant ISS as Emissor (Itaú)
+    participant P as "Portador"
+    participant POS as "Terminal POS"
+    participant ACQ as "Adquirente (Cielo)"
+    participant NET as "Bandeira (Visa)"
+    participant ISS as "Emissor (Itaú)"
 
     P->>POS: Insere cartão
     POS->>POS: Lê chip (EMV)
@@ -196,21 +196,21 @@ sequenceDiagram
     ACQ->>NET: 0100 Authorization Request
     NET->>NET: Identifica emissor (BIN)
     NET->>ISS: 0100 Authorization Request
-    ISS->>ISS: Valida ARQC, saldo, fraude
+    ISS->>ISS: Valida ARQC, saldo e fraude
     ISS-->>NET: 0110 Authorization Response (DE39=00)
     NET-->>ACQ: 0110 Authorization Response
     ACQ-->>POS: 0210 Financial Response
-    POS->>POS: Chip valida ARPC, gera TC
+    POS->>POS: Chip valida ARPC e gera TC
     POS-->>P: Comprovante
 
-    Note over ACQ,ISS: --- D+1: Clearing ---
-    ACQ->>NET: Clearing file (captura)
-    NET->>ISS: Clearing file
+    Note over ACQ,ISS: D+1 Clearing
+    ACQ->>NET: Arquivo de captura
+    NET->>ISS: Arquivo de clearing
 
-    Note over ACQ,ISS: --- D+2: Settlement ---
-    ISS->>NET: Paga valor - interchange
-    NET->>ACQ: Paga valor - assessment
-    ACQ->>ACQ: Paga merchant (valor - MDR)
+    Note over ACQ,ISS: D+2 Settlement
+    ISS->>NET: Pagamento menos interchange
+    NET->>ACQ: Pagamento menos assessment
+    ACQ->>ACQ: Repasse ao merchant menos MDR
 ```
 
 ---
