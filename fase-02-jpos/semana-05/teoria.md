@@ -594,16 +594,80 @@ public class QueryHost implements GroupSelector {
 
 ## 8. Exercícios Semana 7
 
+### Exercícios fundamentais — pipeline
+
 1. **Implemente 5 participants:** QueryHost, ValidateMessage, RouteByBIN (stub), BuildResponse, AuditLog
 2. **Configure o TransactionManager** no deploy XML
 3. **Teste cada participant isoladamente** (unit test com Context mockado)
 4. **Teste o pipeline completo**: Request entra → passa por todos → Response sai
 
-### Desafio
+### Exercícios sobre o protocolo 2PC ★
+
+5. **Rastreie a join-list manualmente:**
+   Dado o pipeline `[ValidateMessage, CheckDuplicate, ForwardToIssuer, AuditLog]`, escreva no papel (ou em comentários de código) o estado da join-list após cada `prepare()` para os cenários:
+   - Todos retornam `PREPARED`
+   - `ForwardToIssuer` retorna `ABORTED`
+   - `CheckDuplicate` retorna `NO_JOIN`, demais `PREPARED`
+
+   Depois escreva um teste que **verifica a ordem de chamada** de `abort()` usando um spy/mock dos participants.
+
+6. **Implemente `CheckDuplicate` com estado real:**
+   - `prepare()`: insere chave `"TERMINAL:STAN"` em um `ConcurrentHashMap`. Se já existe → `ABORTED` (código `94`)
+   - `abort()`: remove a chave (permite retry legítimo)
+   - `commit()`: mantém a chave (bloqueia duplicatas futuras)
+   - Escreva um teste que:
+     a. Processa uma transação com STAN=123456 → deve passar
+     b. Processa a mesma STAN=123456 → deve retornar `94`
+     c. Após a primeira transação abortar (simule falha no participant seguinte), processa STAN=123456 novamente → deve passar (lock foi liberado)
+
+7. **Reproduza a armadilha clássica (TDD):**
+   Escreva primeiro um teste que *prova o bug*:
+   ```java
+   // Cenário: ForwardToIssuer aprova (RC=00), participant seguinte falha
+   // Com abort() vazio: nenhum reversal é enviado
+   // Com abort() correto: reversal é enviado para o emissor
+   @Test
+   void quandoParticipantSeguinteFalhaAposAprovacao_deveEnviarReversal() {
+       // 1. ForwardToIssuer recebe resposta 00 do emissor mock
+       // 2. AuditLog (participant seguinte) lança exceção em prepare()
+       // 3. Verifica que ForwardToIssuer.abort() enviou 0400 ao emissor
+   }
+   ```
+   Faça o teste passar implementando o `abort()` correto no `ForwardToIssuer`.
+
+8. **Classifique seus participants:**
+   Para cada participant implementado (QueryHost, ValidateMessage, RouteByBIN, BuildResponse, AuditLog), preencha a tabela:
+
+   | Participant | `prepare()` faz efeito externo? | Retorno correto | `commit()` precisa código? | `abort()` precisa código? |
+   |---|---|---|---|---|
+   | QueryHost | ? | ? | ? | ? |
+   | ValidateMessage | ? | ? | ? | ? |
+   | ... | | | | |
+
+   Justifique cada resposta. Se algum deveria retornar `PREPARED \| READONLY`, corrija o código.
+
+### Desafios
+
+**Desafio 1 — TimingParticipant:**
 Implemente um participant `TimingParticipant` que:
 - No `prepare()`: registra `System.nanoTime()` no Context
-- No `commit()`: calcula latência e loga
+- No `commit()`: calcula latência e loga com MTI
 - Gera métrica: `iso8583.txn.latency.ms` por MTI
+
+**Desafio 2 — Prove o 2PC em ação:**
+Configure o `TransactionManager` com `debug=true` e capture o log de uma transação que aborta no meio do pipeline. Identifique no log:
+1. Em qual participant o `ABORTED` foi emitido
+2. Quais participants tiveram `abort()` chamado
+3. Confirme que a ordem de `abort()` é inversa à de `prepare()`
+
+Documente suas descobertas com capturas de log anotadas.
+
+**Desafio 3 — Simulação de descasamento financeiro:**
+1. Crie um emissor simulado que sempre responde `00` com delay de 1 segundo
+2. Crie um participant `FailAfterApproval` que sempre retorna `ABORTED` no `prepare()` — simula o AuditLog falhando após a aprovação
+3. Execute o pipeline com `ForwardToIssuer.abort()` **vazio** → confirme que nenhum reversal é enviado
+4. Corrija o `abort()` → confirme que o reversal é enviado
+5. Responda: em produção, o que aconteceria com o portador no cenário bugado?
 
 ---
 
