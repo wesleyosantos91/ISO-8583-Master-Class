@@ -52,6 +52,31 @@ Um programa de formação completa para se tornar **especialista em mensageria d
 
 ---
 
+## Quickstart — veja o switch rodando antes de ler uma linha de teoria
+
+```bash
+# Clone e entre no projeto
+git clone https://github.com/wesleyosantos91/ISO-8583-Master-Class.git
+cd ISO-8583-Master-Class/laboratorio/payment-switch-lab
+
+# Build + sobe o stack completo
+mvn clean package -DskipTests
+docker-compose up -d
+
+# Verifique que o switch está escutando na porta 8583
+docker-compose logs payment-switch-lab | grep "listening on port"
+
+# Envie um Echo Request (0800) e observe o Echo Response (0810)
+docker-compose exec acquirer-simulator java -jar acquirer-simulator.jar --echo
+
+# Envie uma compra (0200) e observe a autorização (0210 DE39=00)
+docker-compose exec acquirer-simulator java -jar acquirer-simulator.jar --purchase --amount=15000 --pan=4532015112830366
+```
+
+> **O que você vai ver:** O switch recebe o 0200, roteia para o issuer-simulator, recebe 0210 com DE39=00, e devolve a resposta aprovada. Isso é o fluxo completo de autorização em ação.
+
+---
+
 ## Como usar
 
 1. **Siga a ordem.** Cada semana constrói sobre a anterior.
@@ -89,7 +114,7 @@ Um programa de formação completa para se tornar **especialista em mensageria d
 
 ## Meta final
 
-Ao completar as 28 semanas, você terá:
+Ao completar as 30 semanas, você terá:
 
 - [ ] Mini-switch Java com jPOS (TransactionManager + Participants)
 - [ ] Fluxos 0100/0110, 0200/0210, 0400/0410, 0800/0810
