@@ -415,3 +415,83 @@ Você agora domina o ciclo completo de chargebacks e disputes:
 | Operação em escala | Automação, SLAs, dashboards |
 | Brasil | Elo, BACEN, diferenças regulatórias |
 | Arquitetura | O que o switch precisa garantir para suportar disputes |
+
+---
+
+## Exercícios Semana 30
+
+1. **Decisão de representment:**
+   Para cada chargeback abaixo, decida: representar, aceitar ou revisão manual. Justifique.
+   - Valor: R$ 45. Reason code 10.4. Sem 3DS. Sem histórico do cliente.
+   - Valor: R$ 3.800. Reason code 13.1. Entrega confirmada com código de rastreio + assinatura digital.
+   - Valor: R$ 120. Reason code 13.2 (recorrência cancelada). Merchant não tem log de solicitação de cancelamento.
+   - Valor: R$ 950. Reason code 10.4. 3DS com ECI=05 (fully authenticated).
+   - Valor: R$ 200. Reason code 12.6 (duplicata). Merchant tem logs provando que são duas compras distintas com 3h de diferença.
+
+2. **Calcule o break-even do representment:**
+   Um adquirente recebe 500 chargebacks/mês com valor médio de R$ 280. O custo operacional de representment é R$ 35/caso (pessoal + sistemas). A taxa de win rate histórica é 38%.
+   - Qual o valor mínimo de chargeback que vale a pena representar?
+   - Quantos dos 500 chargebacks mensais deveriam ir a representment?
+   - Qual o retorno financeiro esperado do programa de representment?
+
+3. **Ciclo financeiro completo:**
+   Uma transação de R$ 1.000 (MDR 2.8%, interchange 1.4%, assessment 0.2%) passa por:
+   - Autorização aprovada (D+0)
+   - Clearing + settlement (D+1/D+2)
+   - Chargeback recebido 45 dias depois
+   - Representment enviado e ganho
+
+   Para cada etapa, calcule o saldo de cada ator (portador, merchant, adquirente, bandeira, emissor). Ao final, qual é o saldo líquido de cada um?
+
+4. **Implemente o `DisputeAutomationEngine`:**
+   Baseado no código da semana, estenda o `DisputeAutomationEngine` com:
+   - `evaluate3dsEligibility()`: implementação completa com ECI 05/06/07
+   - `evaluateDeliveryEvidence()`: recebe booleano `hasSignedDeliveryProof` e verifica se o valor supera `MIN_DEFENSE_THRESHOLD`
+   - `evaluateDuplicateEvidence()`: verifica se timestamps das duas transações diferem por mais de 5 minutos (para evitar representar duplicatas reais)
+   - Escreva testes unitários para cada cenário acima.
+
+5. **Design do `TransactionRecord` para disputes:**
+   Revise o modelo de dados da semana. Adicione os campos necessários para:
+   - Responder a um Retrieval Request da bandeira (1644)
+   - Suportar partial chargeback
+   - Rastrear se 3DS foi realizado e com qual ECI
+   - Armazenar o prazo de representment calculado automaticamente
+   - Alertar quando um RRN está próximo do prazo (SLA 48h de antecedência)
+
+### Desafio — Sistema de disputes end-to-end
+
+Implemente um `ChargebackLifecycleService` que:
+
+1. **Recebe um chargeback** (simulado como objeto `Chargeback` com RRN, reason code, valor):
+   - Busca a transação original pelo RRN
+   - Valida se o partial amount é ≤ ao valor original
+   - Calcula o prazo de representment (30 dias para Visa, 45 para Mastercard)
+   - Persiste o status inicial `CHARGEBACK_RECEIVED`
+
+2. **Avalia automaticamente** se deve representar:
+   - Chama o `DisputeAutomationEngine`
+   - Se `REPRESENT_AUTO`: monta o representment e o envia (mock)
+   - Se `ACCEPT`: debita do merchant e fecha
+   - Se `MANUAL_REVIEW`: notifica o time de operações
+
+3. **Gera alertas** diários:
+   - Chargebacks a vencer em ≤ 48h sem resposta → alerta crítico
+   - Merchant com chargeback ratio > 0.65% no mês → alerta de monitoramento
+
+4. **Relatório mensal** com:
+   - Total recebido, valor em risco, win rate, breakdown por reason code, merchants no threshold
+
+Escreva testes de integração cobrindo os 3 caminhos principais do `evaluate()` e o alerta de vencimento.
+
+---
+
+## Resumo da Fase 8 — Consolidação
+
+Ao terminar esta fase, você deve ser capaz de:
+
+- **Explicar** a diferença entre reversal, void, refund e chargeback sem hesitar
+- **Identificar** pelo reason code a estratégia de defesa correta
+- **Calcular** chargeback ratio e determinar em qual programa de monitoramento um merchant se encontra
+- **Decidir** quando representar e quando aceitar, com base em custo-benefício real
+- **Projetar** o modelo de dados de um switch que suporte disputes, com retenção de 13 meses e rastreabilidade pelo RRN
+- **Implementar** automação do ciclo de disputes com decisão por reason code, SLA tracking e alertas

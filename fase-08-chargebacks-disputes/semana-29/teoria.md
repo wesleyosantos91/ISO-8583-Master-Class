@@ -354,3 +354,60 @@ Logs de transação devem ser imutáveis (append-only) e retidos pelo prazo regu
 | Chargeback ratio | Visa: alerta em 0.65%; Mastercard: alerta em 1.5% |
 | Impacto técnico | RRN como chave de rastreio, DE 90, retenção 13 meses |
 | Friendly fraud | Portador realizou mas contesta — defensável com evidências |
+
+---
+
+## Exercícios Semana 29
+
+1. **Classifique os cenários:**
+   Para cada situação abaixo, indique se é reversal, void, refund ou chargeback, e quem inicia:
+   - Cliente compra R$ 500 com cartão, switch não recebe resposta do emissor em 30s
+   - Lojista erra o valor e cobra R$ 5.000 em vez de R$ 500, percebe na hora e cancela
+   - Portador recebe o produto errado e liga para o banco 15 dias depois
+   - Adquirente percebe que processou a mesma transação duas vezes no clearing
+   - Portador cancela assinatura de streaming, mas no mês seguinte é cobrado novamente
+
+2. **Reason code correto:**
+   Indique o reason code Visa mais adequado para cada situação:
+   - Portador afirma não ter feito a compra online (sem 3DS)
+   - Terminal sem chip processou cartão com chip que foi clonado
+   - Loja cobrou R$ 350 mas a autorização foi de R$ 300
+   - Clearing do merchant chegou 12 dias após a autorização
+   - Portador cancelou assinatura, merchant cobrou mesmo assim
+   - Portador diz que o produto chegou completamente diferente do anunciado
+
+3. **Calcule o chargeback ratio:**
+   Um merchant processou em março:
+   - 8.000 transações aprovadas
+   - 42 chargebacks recebidos (dos quais 15 foram de transações de fevereiro)
+
+   Qual é o chargeback ratio? O merchant está no VDMP? Em qual nível (Early Warning, Standard, Excessive)?
+
+   Dica: o denominador é o total de transações do **mês de referência** (não o mês dos chargebacks).
+
+4. **Rastreabilidade com RRN:**
+   Analise o cenário:
+   - Auth 0100 processada com STAN=001234, RRN=202403140001, DE39=00
+   - Clearing enviado no D+1: RRN=202403140001, valor R$ 350
+   - Chargeback recebido (reason code 12.5): valor contestado R$ 500
+
+   Quais perguntas você precisa responder para defender essa transação? Que dados o switch precisa ter guardado? A defesa é viável — por quê?
+
+5. **Partial chargeback — impacto técnico:**
+   Um switch simples armazena `amount` como `long` (centavos). Um chargeback de R$ 200 chega referente a uma autorização de R$ 500.
+   - O que o switch precisa verificar para aceitar o partial chargeback?
+   - O que acontece com o restante (R$ 300) — continua liquidado?
+   - Implemente o método `validatePartialChargebackAmount(long originalAmount, long chargebackAmount)` com as validações necessárias.
+
+### Desafio — Análise de incidente
+
+Você recebe um alerta: um merchant de e-commerce aumentou seu chargeback ratio de 0.3% para 2.1% em 30 dias. São 180 chargebacks recebidos, dos quais:
+- 140 com reason code 10.4 (CNP fraud)
+- 25 com reason code 13.1 (não recebido)
+- 15 com reason code 12.6 (duplicata)
+
+1. O merchant está em qual programa de monitoramento da Visa? Quais são as consequências imediatas?
+2. Para os 140 CBs de fraude CNP: sem dados de 3DS, qual é a taxa realista de ganho no representment?
+3. Para os 15 de duplicata: o que o switch deveria ter impedido? Qual mecanismo técnico faltou?
+4. Que ação imediata você recomenda para o adquirente em relação a esse merchant?
+5. Como o switch deveria ter gerado um alerta antes de chegar em 2.1%?
