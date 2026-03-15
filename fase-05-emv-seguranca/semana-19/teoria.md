@@ -233,18 +233,96 @@ DE 22 = 100 (credential on file)
 DE 48 = indicadores COF (varia por bandeira)
 ```
 
-## 3. Tokenização Network-Level
+## 3. Tokenização Network-Level — VTS e MDES
+
+### 3.1 Por que tokenizar?
+
+O PAN (número do cartão) é um dado sensível que circula em dezenas de sistemas: e-commerces, wallets, COF (Credential on File), terminais. Se qualquer um desses sistemas for comprometido, o PAN vaza.
+
+A tokenização substitui o PAN real por um **token** que:
+- É inútil fora do contexto para o qual foi gerado
+- Pode ser invalidado sem cancelar o cartão
+- Limita o escopo de uso (merchant específico, device específico, canal específico)
+
+### 3.2 Arquitetura de tokenização
 
 ```
-FPAN (Funding PAN): 4532 0151 1283 0366 ← número real do cartão
-DPAN (Digital PAN):  4532 9999 8888 7777 ← token (substituto)
+FPAN (Funding PAN): 4532 0151 1283 0366  ← número real do cartão
+DPAN (Device/Digital PAN): 4532 9999 8888 7777  ← token
 
-Apple Pay / Google Pay:
-  Device armazena DPAN (não o FPAN)
-  Cada transação gera um criptograma único
-  DE 2 carrega o DPAN
-  Emissor/processadora de-tokeniza para encontrar FPAN
+Visa Token Service (VTS) / Mastercard MDES
+┌─────────────────────────────────────────────────┐
+│  Token Vault                                    │
+│  DPAN 4532 9999 8888 7777 → FPAN 4532 0151... │
+│  Scope: Apple Pay, Device ABC, Merchant ANY     │
+└─────────────────────────────────────────────────┘
 ```
+
+### 3.3 Fluxo de provisionamento (Apple Pay / Google Pay)
+
+```mermaid
+sequenceDiagram
+    participant DEV as Device (iPhone)
+    participant WALLET as Apple Pay
+    participant TSP as Visa VTS / MDES
+    participant ISS as Emissor
+
+    DEV->>WALLET: Portador adiciona cartão (FPAN)
+    WALLET->>ISS: Solicita provisionamento (FPAN + device info)
+    ISS->>ISS: Avalia risco do device
+    ISS->>TSP: Solicita geração de token
+    TSP->>TSP: Gera DPAN vinculado ao FPAN
+    TSP-->>ISS: DPAN gerado
+    ISS-->>WALLET: Aprova com DPAN
+    WALLET-->>DEV: Cartão adicionado (armazena DPAN, nunca o FPAN)
+
+    Note over DEV,ISS: Pagamento
+    DEV->>DEV: Gera criptograma unico (TAVV/UCAF) com DPAN
+    DEV->>ISS: Transacao com DPAN no DE 2 + criptograma no DE 55
+    ISS->>TSP: De-tokeniza DPAN para FPAN
+    ISS->>ISS: Valida criptograma + autoriza
+    ISS-->>DEV: Aprovado
+```
+
+### 3.4 Impacto no ISO 8583
+
+| Campo | Valor com FPAN | Valor com DPAN (token) |
+|-------|---------------|----------------------|
+| DE 2 | 4532 0151 1283 0366 | 4532 9999 8888 7777 |
+| DE 22 | 051 (chip) | 072 (contactless com token) |
+| DE 55 (tag 9F26) | ARQC baseado no FPAN | TAVV/DCVV baseado no DPAN |
+| DE 48 | Dados normais | Token requestor ID |
+
+### 3.5 Tipos de tokens
+
+| Tipo | Escopo | Exemplo |
+|------|--------|---------|
+| **Device Token** | Merchant ANY + Device específico | Apple Pay, Google Pay |
+| **Merchant Token** | Merchant específico + Device ANY | COF em Amazon |
+| **Secure Element Token** | Hardware específico (NFC) | Cartão contactless |
+| **Cloud Token** | Armazenado remotamente | Samsung Pay (alguns casos) |
+
+### 3.6 Account Updater
+
+Quando um cartão expira ou é reemitido, o PAN/data de validade muda. Para merchants com COF, isso quebraria as cobranças recorrentes. O **Account Updater** resolve isso:
+
+```
+Merchant tem no COF:
+  PAN: 4532 0151 1283 0366
+  Exp: 11/2024
+
+Cartão expira → Itaú emite novo:
+  PAN: 4532 0151 1283 0366 (mesmo PAN, nova data)
+  Exp: 11/2027
+
+Merchant consulta Account Updater (batch mensal):
+  Envia PANs/exp armazenados → recebe updates
+
+Visa: Visa Account Updater (VAU)
+Mastercard: Automatic Billing Updater (ABU)
+```
+
+Para tokens DPAN, o Account Updater é transparente — o token permanece válido mesmo quando o FPAN subjacente é renovado.
 
 ## 4. Exercícios Semana 19
 

@@ -183,21 +183,21 @@ t+D30  Portador recebe fatura
 
 ```mermaid
 sequenceDiagram
-    participant P as "Portador"
-    participant POS as "Terminal POS"
-    participant ACQ as "Adquirente (Cielo)"
-    participant NET as "Bandeira (Visa)"
-    participant ISS as "Emissor (Itaú)"
+    participant P as Portador
+    participant POS as Terminal POS
+    participant ACQ as Adquirente Cielo
+    participant NET as Bandeira Visa
+    participant ISS as Emissor Itau
 
     P->>POS: Insere cartão
-    POS->>POS: Lê chip (EMV)
+    POS->>POS: Lê chip EMV
     POS->>ACQ: 0200 Financial Request
     ACQ->>ACQ: Valida formato
     ACQ->>NET: 0100 Authorization Request
-    NET->>NET: Identifica emissor (BIN)
+    NET->>NET: Identifica emissor BIN
     NET->>ISS: 0100 Authorization Request
     ISS->>ISS: Valida ARQC, saldo e fraude
-    ISS-->>NET: 0110 Authorization Response (DE39=00)
+    ISS-->>NET: 0110 Authorization Response DE39=00
     NET-->>ACQ: 0110 Authorization Response
     ACQ-->>POS: 0210 Financial Response
     POS->>POS: Chip valida ARPC e gera TC
@@ -211,6 +211,59 @@ sequenceDiagram
     ISS->>NET: Pagamento menos interchange
     NET->>ACQ: Pagamento menos assessment
     ACQ->>ACQ: Repasse ao merchant menos MDR
+```
+
+### 2.3 State Machine — Estados de uma Transação
+
+Uma transação não é um evento único — ela passa por estados bem definidos ao longo do tempo:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Autorizada : 0100/0110 DE39=00
+    Autorizada --> Capturada : Clearing enviado D+1
+    Autorizada --> Revertida : 0400 timeout ou falha
+    Capturada --> Liquidada : Settlement D+2
+    Capturada --> Chargeback : Portador contesta
+    Liquidada --> Chargeback : Portador contesta ate D+120
+    Chargeback --> Representment : Adquirente defende
+    Representment --> Encerrada : Chargeback revertido
+    Representment --> PreArbitragem : Emissor mantem CB
+    PreArbitragem --> Encerrada : Acordo entre partes
+    PreArbitragem --> Arbitragem : Escala para bandeira
+    Arbitragem --> Encerrada : Decisao final da bandeira
+    Revertida --> Encerrada
+    Liquidada --> Encerrada : Sem contestacao
+```
+
+### 2.4 Linha do Tempo — Do Pagamento ao Settlement
+
+```
+D+0 (dia da compra)
+  │
+  ├── t=0s   Portador insere cartão
+  ├── t=2s   POS envia 0200/0100
+  ├── t=3s   Emissor responde 0210/0110
+  └── t=3s   Comprovante impresso ← AUTORIZADO (limite reservado)
+
+D+1 (dia seguinte)
+  │
+  ├── Adquirente fecha lote do dia
+  ├── Envia arquivo de clearing para bandeira (TC/IPM)
+  └── Bandeira repassa ao emissor ← CAPTURADO (confirmado)
+
+D+2 (dois dias após)
+  │
+  ├── Emissor paga bandeira (menos interchange)
+  ├── Bandeira paga adquirente (menos assessment)
+  └── Adquirente paga merchant (menos MDR) ← LIQUIDADO (dinheiro moveu)
+
+D+3 a D+30 (para crédito parcelado: até D+360)
+  │
+  └── Parcelas liquidadas conforme calendário
+
+D+30 a D+120 (janela de contestação)
+  │
+  └── Portador pode iniciar chargeback ← risco ainda existe
 ```
 
 ---
@@ -466,14 +519,94 @@ Um dos maiores produtos financeiros do Brasil em pagamentos:
 
 ---
 
+## 8. Sub-adquirência — O Ator Invisível
+
+### 8.1 O que é um sub-adquirente?
+
+O **sub-adquirente** (ou facilitador de pagamentos) é uma empresa que se credencia junto a um adquirente master e sub-credencia merchants menores sob seu CNPJ. O merchant não tem contrato direto com o adquirente — tem com o sub-adquirente.
+
+```
+POS (iFood) → Sub-adquirente (iFood Pagamentos)
+                    │
+                    ▼
+              Adquirente Master (Stone/Cielo)
+                    │
+                    ▼
+              Bandeira (Visa/Master)
+                    │
+                    ▼
+              Emissor (Itaú/Nubank)
+```
+
+Exemplos brasileiros:
+- **iFood Pagamentos** (sub-adquirente para restaurantes no iFood)
+- **PagSeguro** (sub-adquirente para merchants de pequeno porte)
+- **Mercado Pago** (sub-adquirente no ecossistema Mercado Livre)
+- **Cielo LIO** (solução integrada que pode ter sub-adquirência embutida)
+
+### 8.2 Impacto técnico
+
+Do ponto de vista do protocolo ISO 8583:
+- O **DE 42 (Merchant ID)** pode ser o ID do sub-adquirente, não do merchant real
+- O **DE 43 (Card Acceptor Name/Location)** pode ter nome do sub-adquirente + merchant
+- **Chargeback** vai para o sub-adquirente, que repassa ao merchant
+- **MCC (Merchant Category Code)**: pode haver conflito — qual atividade classificar?
+
+### 8.3 Riscos regulatórios
+
+O BACEN regula sub-adquirência no Brasil. Um sub-adquirente:
+- Precisa de autorização do BACEN para operar acima de determinado volume
+- É responsável pelo risco de crédito dos merchants que sub-credencia
+- Deve monitorar chargeback ratio de cada merchant sub-credenciado
+
+---
+
+## 9. PIX e Cartões — Coexistência no Mercado Brasileiro
+
+### 9.1 Contexto
+
+O PIX transformou o mercado de pagamentos brasileiro desde novembro de 2020. Em 2024, o PIX já supera cartões em volume de transações. Isso não significa que cartões estão em declínio — eles coexistem com casos de uso diferentes.
+
+### 9.2 Quando cada um é usado
+
+| Critério | Cartão de Crédito | Cartão de Débito | PIX |
+|----------|------------------|-----------------|-----|
+| Parcelamento | Sim | Não | Não |
+| Crédito rotativo | Sim | Não | Não |
+| Proteção ao consumidor (chargeback) | Robusta | Limitada | Limitada (MED) |
+| Limite | Pré-aprovado pelo emissor | Saldo em conta | Saldo em conta |
+| Custo para merchant | MDR 2-5% | MDR 1-1.5% | Até 1.99% (negociável) |
+| Velocidade de liquidação | D+2 a D+30 | D+1 | Imediato |
+| Cashback/pontos | Frequente | Raro | Crescente |
+| Presença física necessária | Terminal POS | Terminal POS | QR Code / Link |
+| Internacional | Sim | Sim (limitado) | Não (ainda) |
+
+### 9.3 Impacto técnico do PIX no switch de cartões
+
+- **Nenhum**: PIX usa infraestrutura separada (SPI — Sistema de Pagamentos Instantâneos do BACEN)
+- O switch ISO 8583 não processa PIX
+- Mas adquirentes e bancos precisam suportar **ambos** os protocolos internamente
+- Alguns merchants usam **PIX via QR Code no terminal** — o POS gera o QR, o portador paga pelo app, a confirmação chega via webhook (não ISO 8583)
+
+### 9.4 Por que estudar PIX sendo especialista em ISO 8583?
+
+Porque **decisões de arquitetura** em pagamentos hoje envolvem ambos:
+- Qual meio de pagamento oferecer em qual contexto?
+- Como reconciliar vendas que misturam PIX e cartão?
+- Como tratar chargebacks de cartão vs MED do PIX diferentemente?
+
+---
+
 ## Resumo da Semana
 
 Após esta semana, você deve ter clareza absoluta sobre:
 
-1. **Quem são os atores** e qual o papel de cada um
+1. **Quem são os atores** e qual o papel de cada um (incluindo sub-adquirente)
 2. **A jornada completa** de uma transação (auth → clearing → settlement)
-3. **On-us vs off-us** e como o roteamento por BIN funciona
-4. **Dual message vs single message** e quando usar cada um
-5. **O modelo econômico** (interchange, MDR, assessment)
-6. **Parcelamento** como diferencial brasileiro
-7. **Por que decisões técnicas impactam receita**
+3. **State machine** da transação: estados do AUTORIZADO ao ENCERRADO
+4. **On-us vs off-us** e como o roteamento por BIN funciona
+5. **Dual message vs single message** e quando usar cada um
+6. **O modelo econômico** (interchange, MDR, assessment)
+7. **Parcelamento** como diferencial brasileiro
+8. **PIX vs cartão** — coexistência e diferenças técnicas
+9. **Por que decisões técnicas impactam receita**
