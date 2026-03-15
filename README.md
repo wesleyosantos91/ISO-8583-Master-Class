@@ -37,6 +37,7 @@ Um programa de formação completa para se tornar **referência de mercado em me
 ├── fase-10-performance/          ← Semana  33:    Performance: 5.000+ TPS
 ├── fase-11-lideranca/            ← Semanas 34-36: Liderança, Carreira e Referência
 │
+├── proximos-passos.md            ← O que estudar depois das 36 semanas
 ├── referencias/                  ← Glossário, Response Codes, Modelo Econômico
 │
 └── laboratorio/
