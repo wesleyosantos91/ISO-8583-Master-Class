@@ -41,7 +41,186 @@ Concatenado:
 | `9F33` | Terminal Capabilities | 3 | O que o terminal suporta |
 | `9F34` | CVM Results | 3 | Como portador foi verificado |
 
-## 3. Fluxo ARQC → ARPC
+## 3. Decode Profundo das Tags Críticas
+
+Essas três tags aparecem em **toda transação chip** e são fundamentais para debugging, investigação de fraude e análise de chargeback.
+
+### TVR — Terminal Verification Results (tag `95`, 5 bytes)
+
+Cada bit indica que o terminal **detectou** aquela condição durante o processamento. Bit `1` = condição presente.
+
+```
+Byte 1 — Offline Data Authentication
+  Bit 8 (0x80): Offline data authentication was not performed
+  Bit 7 (0x40): SDA failed
+  Bit 6 (0x20): ICC data missing
+  Bit 5 (0x10): Card appears on terminal exception file
+  Bit 4 (0x08): DDA failed
+  Bit 3 (0x04): CDA failed
+  Bits 2-1:     RFU
+
+Byte 2 — Application Version / Expiration
+  Bit 8 (0x80): ICC and terminal have different application versions
+  Bit 7 (0x40): Expired application
+  Bit 6 (0x20): Application not yet effective
+  Bit 5 (0x10): Requested service not allowed for card product
+  Bit 4 (0x08): New card
+  Bits 3-1:     RFU
+
+Byte 3 — Cardholder Verification
+  Bit 8 (0x80): Cardholder verification was not successful
+  Bit 7 (0x40): Unrecognised CVM
+  Bit 6 (0x20): PIN Try Limit exceeded
+  Bit 5 (0x10): PIN entry required and PIN pad not present or not working
+  Bit 4 (0x08): PIN entry required, PIN pad present, but PIN was not entered
+  Bit 3 (0x04): Online PIN entered
+  Bits 2-1:     RFU
+
+Byte 4 — Terminal Risk Management
+  Bit 8 (0x80): Transaction exceeds floor limit
+  Bit 7 (0x40): Lower consecutive offline limit exceeded
+  Bit 6 (0x20): Upper consecutive offline limit exceeded
+  Bit 5 (0x10): Transaction selected randomly for online processing
+  Bit 4 (0x08): Merchant forced transaction online
+  Bits 3-1:     RFU
+
+Byte 5 — Script / Issuer Authentication
+  Bit 8 (0x80): Default TDOL used
+  Bit 7 (0x40): Issuer authentication failed
+  Bit 6 (0x20): Script processing failed before final GENERATE AC
+  Bit 5 (0x10): Script processing failed after final GENERATE AC
+  Bits 4-1:     RFU
+```
+
+**Exemplo de decode:** TVR = `00 80 04 00 00`
+```
+Byte 1 (00): sem falhas na autenticação offline
+Byte 2 (80): bit 8 → versões diferentes entre terminal e chip — comum, geralmente inócuo
+Byte 3 (04): bit 3 → CDA failed — chip tentou Combined DDA mas terminal não suportou
+Byte 4 (00): sem questões de risco
+Byte 5 (00): sem falhas de script
+```
+
+**Sinais de alerta em investigações:**
+- `xx 40 xx xx xx` (byte 2, bit 7): aplicação expirada — portador com cartão vencido ou fallback
+- `xx xx 20 xx xx` (byte 3, bit 6): PIN Try Limit exceeded — possível tentativa de força bruta
+- `xx xx 80 xx xx` (byte 3, bit 8): CVM failed — PIN digitado errado mas transação aprovada offline
+
+---
+
+### AIP — Application Interchange Profile (tag `82`, 2 bytes)
+
+Declara o que o **chip suporta** (capacidades do cartão, não do terminal):
+
+```
+Byte 1:
+  Bit 8 (0x80): RFU
+  Bit 7 (0x40): SDA supported
+  Bit 6 (0x20): DDA supported
+  Bit 5 (0x10): Cardholder verification supported
+  Bit 4 (0x08): Terminal risk management to be performed
+  Bit 3 (0x04): Issuer authentication supported
+  Bit 2 (0x02): On-device cardholder verification supported (contactless)
+  Bit 1 (0x01): CDA supported
+
+Byte 2: RFU (geralmente 0x00)
+```
+
+**Exemplo — cartão de débito padrão:** AIP = `5C 00`
+```
+5C = 0101 1100
+  Bit 7 (0x40): SDA supported ✓
+  Bit 5 (0x10): Cardholder verification supported ✓
+  Bit 4 (0x08): Terminal risk management ✓
+  Bit 3 (0x04): Issuer authentication supported ✓
+→ Suporta SDA, PIN e auth online. Não suporta DDA/CDA.
+```
+
+**Exemplo — cartão premium com contactless:** AIP = `7E 00`
+```
+7E = 0111 1110
+  Adiciona bit 6 (0x20): DDA supported ✓
+  Adiciona bit 2 (0x02): On-device CVM supported ✓ (ex: biometria no celular)
+→ Cartão mais seguro; DDA impede clonagem, on-device CVM habilita biometria.
+```
+
+---
+
+### CVM Results — Cardholder Verification Method Results (tag `9F34`, 3 bytes)
+
+Indica **como** o portador foi verificado e qual foi o resultado:
+
+```
+Byte 1 — Método usado (CVM Code):
+  0x00: Fail / No CVM
+  0x01: Plaintext PIN verificado pelo chip (offline)
+  0x02: Online Enciphered PIN (PIN enviado criptografado ao emissor)
+  0x03: Plaintext PIN offline + Signature
+  0x04: Enciphered PIN verificado pelo chip (offline)
+  0x1E: Signature (papel)
+  0x1F: No CVM required (valor abaixo do floor limit)
+  0x3F: No CVM performed
+
+Byte 2 — Condição de aplicação (CVM Condition):
+  0x00: Always
+  0x03: If terminal supports the CVM
+  0x04: If manual cash
+  0x06: If not unattended cash and not manual cash
+
+Byte 3 — Resultado:
+  0x00: Unknown
+  0x01: Failed
+  0x02: Successful
+```
+
+| Cenário | CVM Results | Significado |
+|---------|-------------|-------------|
+| PIN online aprovado | `02 00 02` | Online PIN, sempre, sucesso |
+| PIN offline aprovado | `04 00 02` | Enciphered PIN no chip, sucesso |
+| Assinatura | `1E 00 02` | Signature, sempre, sucesso |
+| Contactless valor baixo | `1F 03 02` | No CVM required, se terminal suportar, sucesso |
+| PIN errado (fallback assinatura) | `02 00 01` + `1E 00 02` | PIN falhou, usou assinatura |
+
+---
+
+### Exemplo Completo: Parse de um DE 55 Real
+
+```
+DE 55 (compra chip Visa, R$ 50,00 — hex bruto):
+9F2608A1B2C3D4E5F607189F2701808202
+5C009F100706010A03A0B8009F37041234
+5678 9F360200A5950500800400009A0326
+03159C01009F02060000000050009F1A02
+00765F2A020986 8407A0000000031010
+9F3303E0F8C89F34030200 02
+
+Parse tag a tag:
+  Tag 9F26 (08): A1B2C3D4E5F60718  → ARQC: criptograma de autenticação do chip
+  Tag 9F27 (01): 80                 → CID: 80 = ARQC (solicitando auth online)
+  Tag 82   (02): 5C00               → AIP: SDA + CV + TermRisk + IssuerAuth
+  Tag 9F10 (07): 06010A03A0B800     → IAD: dados proprietários do emissor
+  Tag 9F37 (04): 12345678           → Unpredictable Number (anti-replay)
+  Tag 9F36 (02): 00A5               → ATC: 165 (165ª transação deste cartão)
+  Tag 95   (05): 0080040000         → TVR: byte2=80 (diff version), byte3=04 (CDA failed)
+  Tag 9A   (03): 260315             → Data: 2026-03-15
+  Tag 9C   (01): 00                 → Tipo: 00 = compra
+  Tag 9F02 (06): 000000005000       → Valor: R$ 50,00 (BCD, em centavos)
+  Tag 9F1A (02): 0076               → País do terminal: 076 = Brasil
+  Tag 5F2A (02): 0986               → Moeda: 0986 = BRL
+  Tag 84   (07): A0000000031010     → AID: Visa Credit
+  Tag 9F33 (03): E0F8C8             → Terminal Capabilities
+  Tag 9F34 (03): 020002             → CVM: Online PIN, sempre, sucesso ✓
+
+O que esse DE 55 revela:
+  - ATC 165: cartão ativo, histórico razoável de uso
+  - TVR byte 3 = 04 (CDA failed): chip usou SDA como fallback → risco levemente elevado
+  - CVM Online PIN Successful: PIN foi validado pelo emissor, não pelo chip
+  - ARQC presente: autenticação legítima do chip para esta transação específica
+```
+
+---
+
+## 4. Fluxo ARQC → ARPC
 
 ```
 1. Chip calcula ARQC (criptograma de request) usando:
@@ -63,7 +242,7 @@ Concatenado:
    - Se falha → gera AAC = transação rejeitada pelo chip
 ```
 
-## 4. Parser TLV em Java
+## 5. Parser TLV em Java
 
 ```java
 public class TLVParser {
@@ -109,7 +288,7 @@ public class TLVParser {
 }
 ```
 
-## 5. Exercícios Semana 17
+## 6. Exercícios Semana 17
 
 1. **Implemente TLVParser** completo com testes
 2. **Parse um DE 55 real** (use dados de exemplo) e identifique cada tag
@@ -160,7 +339,136 @@ Adquirente → Bandeira:  PIN criptografado com ZPK-B
 
 O PIN em claro NUNCA existe fora do HSM.
 
-## 4. PAN Masking — PCI Mindset
+## 4. Como Construir um PIN Block (ISO 9564 Format 0)
+
+O DE 52 carrega o PIN Block — nunca o PIN em claro. Antes de criptografar com a ZPK, o PIN Block é construído em dois passos e um XOR.
+
+### Passo 1: Montar o Bloco PIN (8 bytes / 16 nibbles)
+
+```
+Estrutura:
+  Nibble 1:      0         → identificador de formato (Format 0)
+  Nibble 2:      N         → quantidade de dígitos do PIN (1–12)
+  Nibbles 3–N+2: dígitos do PIN
+  Nibbles N+3–16: padding 0xF
+
+Exemplo — PIN "1234":
+  0  4  1  2  3  4  F  F  F  F  F  F  F  F  F  F
+  ↑  ↑  └──────┘  └────────────────────────────┘
+  |  |  dígitos   padding FFFFFFF
+  |  len=4
+  format=0
+
+Como bytes: 04 12 34 FF FF FF FF FF
+```
+
+### Passo 2: Montar o Bloco PAN (8 bytes / 16 nibbles)
+
+Usa os **12 dígitos centrais** do PAN (excluindo o check digit, contados da direita):
+
+```
+Estrutura:
+  Nibbles 1–4:   0000        → zeros fixos
+  Nibbles 5–16:  12 dígitos mais à direita do PAN, excluindo o último (check digit)
+
+Exemplo — PAN "4532 0151 1283 0366":
+  Remove check digit → "453201511283036" (15 dígitos)
+  Pega os 12 mais à direita → "201511283036"
+
+  0  0  0  0  2  0  1  5  1  1  2  8  3  0  3  6
+  └──────┘  └──────────────────────────────────┘
+   zeros    12 dígitos centrais do PAN
+
+Como bytes: 00 00 20 15 11 28 30 36
+```
+
+### Passo 3: XOR → PIN Block claro
+
+```
+PIN Block:  04 12 34 FF FF FF FF FF
+PAN Block:  00 00 20 15 11 28 30 36
+XOR:        04 12 14 EA EE D7 CF C9
+```
+
+Este resultado (`04 12 14 EA EE D7 CF C9`) é o PIN Block claro.
+Ele é então criptografado com 3DES usando a ZPK → resultado vai no DE 52.
+
+```
+DE 52 = 3DES_Encrypt(ZPK, XOR(PinBlock, PanBlock))
+```
+
+### Por que o PAN entra no XOR?
+
+Vincula criptograficamente o PIN ao cartão. Mesmo que o PIN Block criptografado vaze, ele não pode ser reutilizado em outro PAN — o XOR produziria um PIN errado.
+
+### Implementação Java
+
+```java
+public class PINBlockBuilder {
+
+    /**
+     * Constrói PIN Block Format 0 (ISO 9564).
+     *
+     * @param pin    PIN em texto claro (ex: "1234")
+     * @param pan    PAN completo com check digit (ex: "4532015112830366")
+     * @return       PIN Block de 8 bytes pronto para criptografia
+     */
+    public static byte[] buildFormat0(String pin, String pan) {
+        if (pin == null || pin.length() < 4 || pin.length() > 12)
+            throw new IllegalArgumentException("PIN deve ter 4–12 dígitos");
+        if (pan == null || pan.length() < 13)
+            throw new IllegalArgumentException("PAN inválido");
+
+        // Bloco PIN: 0 + len + dígitos + padding F
+        byte[] pinBlock = new byte[8];
+        char[] pinNibbles = new char[16];
+        pinNibbles[0] = '0';                            // format indicator
+        pinNibbles[1] = (char) ('0' + pin.length());    // PIN length
+        for (int i = 0; i < pin.length(); i++)
+            pinNibbles[2 + i] = pin.charAt(i);
+        for (int i = 2 + pin.length(); i < 16; i++)
+            pinNibbles[i] = 'F';                        // padding
+        for (int i = 0; i < 8; i++)
+            pinBlock[i] = (byte) ((hexVal(pinNibbles[i * 2]) << 4)
+                                 | hexVal(pinNibbles[i * 2 + 1]));
+
+        // Bloco PAN: 0000 + 12 dígitos centrais (sem check digit)
+        String panDigits = pan.substring(pan.length() - 13, pan.length() - 1); // 12 dígitos
+        byte[] panBlock = new byte[8];
+        String panHex = "0000" + panDigits;
+        for (int i = 0; i < 8; i++)
+            panBlock[i] = (byte) ((hexVal(panHex.charAt(i * 2)) << 4)
+                                 | hexVal(panHex.charAt(i * 2 + 1)));
+
+        // XOR
+        byte[] result = new byte[8];
+        for (int i = 0; i < 8; i++)
+            result[i] = (byte) (pinBlock[i] ^ panBlock[i]);
+
+        return result;
+    }
+
+    private static int hexVal(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return 0xF; // padding
+    }
+}
+```
+
+**Teste de validação:**
+```java
+byte[] pb = PINBlockBuilder.buildFormat0("1234", "4532015112830366");
+// Esperado: 04 12 14 EA EE D7 CF C9
+assert HexUtils.toHex(pb).equals("041214EAEED7CFC9");
+```
+
+> **Nunca** armazene ou logue o PIN Block claro. O objeto `byte[]` deve ser apagado (`Arrays.fill(pinBlock, (byte)0)`) imediatamente após a criptografia.
+
+---
+
+## 5. PAN Masking — PCI Mindset
 
 ```java
 public class PANMasker {
@@ -191,7 +499,7 @@ public class PANMasker {
 }
 ```
 
-## 5. Exercícios Semana 18
+## 6. Exercícios Semana 18
 
 1. **Implemente PIN Block Format 0** (gerar e validar)
 2. **Implemente PANMasker** com testes extensivos
