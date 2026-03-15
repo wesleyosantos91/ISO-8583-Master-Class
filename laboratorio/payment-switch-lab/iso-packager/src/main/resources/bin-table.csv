@@ -1,0 +1,29 @@
+# Tabela de BINs — payment-switch-lab
+# Formato: bin_prefix,issuer_name,network,on_us,mux_name,fallback_mux
+#
+# on_us: true = mesma instituição (rota direta), false = off-us (via bandeira)
+# Adicione mais BINs conforme avança nas semanas.
+#
+# EXERCÍCIO SEMANA 11: Expanda para 20+ BINs
+
+# On-Us (nossa instituição)
+45320151,Itau,VISA,true,local-issuer,visa-mux
+55120000,Itau,MASTERCARD,true,local-issuer,mastercard-mux
+65049999,Itau,ELO,true,local-issuer,elo-mux
+60420000,Hipercard,HIPER,true,local-issuer,
+
+# Off-Us Visa
+40000000,Bradesco,VISA,false,visa-mux,
+41000000,BB,VISA,false,visa-mux,
+42000000,Santander,VISA,false,visa-mux,
+43890000,Nubank,VISA,false,visa-mux,
+
+# Off-Us Mastercard
+51230000,Nubank,MASTERCARD,false,mastercard-mux,
+54120000,Bradesco,MASTERCARD,false,mastercard-mux,
+52210000,BB,MASTERCARD,false,mastercard-mux,
+
+# Off-Us Elo
+63620000,Caixa,ELO,false,elo-mux,
+65010000,BB,ELO,false,elo-mux,
+50670000,Bradesco,ELO,false,elo-mux,
