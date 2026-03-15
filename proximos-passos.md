@@ -89,74 +89,195 @@ Mensagem de exemplo (nexo FAST — autorização):
 
 ---
 
-## Trilha 2 — Infraestrutura Cloud-Native
+## Trilha 2 — Frameworks e Outras Linguagens
 
-### Arquitetura Cloud-Native de Switches
+O ecossistema de pagamentos não é exclusivo do Java/jPOS. Conhecer os frameworks e linguagens usados por outras empresas do setor amplia oportunidades e permite contribuir em projetos internacionais.
 
-**Prioridade:** 🔴 Alta — é o que as fintechs modernas constroem
-**Pré-requisito:** Fase 10 (performance) + arquitetura de switch (semana 24)
-**Horizonte:** 4-6 meses
+### Go — A Linguagem das Fintechs Modernas
+
+**Prioridade:** 🔴 Alta — Nubank, Stripe, Square, Mercado Pago usam Go extensivamente
+**Pré-requisito:** Lógica de programação sólida (Java do curso é suficiente)
+**Horizonte:** 2-3 meses para produtividade básica
 
 ```
-Stack moderno de switch de pagamentos:
+Por que Go dominou fintechs:
+  → Compilado, tipado, sem JVM overhead
+  → Goroutines: concorrência nativa para alto volume de I/O
+  → Tempo de startup < 50ms (crítico para lambdas/serverless)
+  → Binário único, deploy trivial em container
 
-  Camada de entrada:
-    Kubernetes (EKS/GKE) + Istio (service mesh)
-    → mTLS entre serviços, circuit breaker no mesh
-    → Canary deploy para novas versões do switch
+Equivalências com o que você já sabe (Java → Go):
+  TransactionParticipant   → interface com método Execute()
+  CompletableFuture        → goroutine + channel
+  synchronized block       → sync.Mutex / sync.RWMutex
+  Optional<T>              → (T, error) — idioma Go
+  ThreadPoolExecutor       → worker pool com goroutines
 
-  Processamento de mensagens:
-    Apache Kafka → event streaming de transações
-    → Exatamente-uma-vez (exactly-once semantics)
-    → Consumer groups por tipo de mensagem (auth, reversal, clearing)
-    → Event sourcing: auditoria imutável de cada estado
+Implementação de parser ISO 8583 em Go:
+  // Biblioteca principal: moov-io/iso8583
+  import "github.com/moov-io/iso8583"
 
-  Estado distribuído:
-    Redis Cluster (velocity, dedup, session)
-    PostgreSQL com Citus (sharding por BIN para escala)
-    → Write-ahead log para auditoria
+  spec := iso8583.NewSpec(...)
+  msg := iso8583.NewMessage(spec)
+  msg.MTI("0200")
+  msg.Field(2, "4111111111111111")   // PAN
+  msg.Field(4, "000000015000")       // Amount
+  packed, err := msg.Pack()
 
-  Observabilidade:
-    OpenTelemetry → Jaeger (distributed tracing)
-    Prometheus + Grafana (métricas)
-    Loki (logs)
-    → Rastrear uma transação em 50 microsserviços
-
-Desafio principal: exatamente-uma-vez em sistemas financeiros
-  → Kafka transactions + idempotency keys
-  → Outbox pattern para garantia de entrega
+Frameworks de switch em Go:
+  moov-io/iso8583  — biblioteca ISO 8583 amplamente usada
+  moov-io/wire     — mensageria SWIFT/Fedwire
+  google/wire      — injeção de dependência (substituição do Spring DI)
 ```
 
-**O que estudar:**
-- `Designing Data-Intensive Applications` — Kleppmann (fundamental)
-- `Building Event-Driven Microservices` — Adam Bellemare
-- Apache Kafka documentation (confluent.io/learn)
+**Onde Go é usado em pagamentos no Brasil:**
+- Nubank — core bancário e microsserviços de autorização
+- PicPay — gateway de pagamentos
+- Pismo — core banking SaaS (adquirido pelo Visa)
 
 ---
 
-### Payment Orchestration — Roteamento Inteligente
+### Python — Antifraude, Analytics e Automação
 
-**Prioridade:** 🟠 Alta para fintechs/subadquirentes
-**Pré-requisito:** Roteamento por BIN (semana 11) + fluxos avançados (semana 26)
-**Horizonte:** 2-3 meses
+**Prioridade:** 🔴 Alta para quem quer trabalhar com risco/fraude
+**Pré-requisito:** Fase 9 (antifraude) para contextualizar os casos de uso
+**Horizonte:** 2-3 meses para uso em pagamentos
 
 ```
-O problema que orchestration resolve:
-  Merchant com 3 adquirentes (Cielo, Stone, Getnet)
-  → Qual usar para cada transação?
+Onde Python entra no ecossistema de pagamentos:
 
-Critérios de roteamento:
-  - Menor custo (MDR por bandeira por adquirente)
-  - Maior taxa de aprovação histórica (por BIN, MCC, valor)
-  - Menor latência (P95 por adquirente nas últimas 1h)
-  - Disponibilidade (circuit breaker por adquirente)
-  - Regras de negócio (débito sempre na Stone, crédito na Cielo)
+  1. Antifraude e ML:
+     → Treinamento de modelos (scikit-learn, XGBoost, LightGBM)
+     → Feature engineering em datasets de transações
+     → Análise de fraude histórica (pandas + jupyter)
 
-Implementação:
-  RouteScore = w1 * aprovação + w2 * (1/custo) + w3 * (1/latência)
-  → Atualizado em tempo real com métricas de sliding window
-  → Fallback automático se adquirente degradado
-  → A/B testing de rotas com divisão de tráfego
+  2. Reconciliação e analytics:
+     → Processar arquivos de clearing (CSV, XML, CNAB)
+     → Cruzar bases de dados entre sistemas legados
+     → Relatórios financeiros automáticos
+
+  3. Automação e testes:
+     → Scripts de load test (locust.io)
+     → Parsers de dump de mensagens ISO 8583
+     → Automação de certificação (envio de test deck)
+
+Biblioteca ISO 8583 em Python:
+  # pyiso8583 — parser/packer puro Python
+  import pyiso8583
+  from pyiso8583.specs import default_ascii as spec
+
+  raw = b"02004000000000000000..."
+  decoded, encoded = pyiso8583.decode(raw, spec)
+  print(decoded["t"])   # MTI: 0200
+  print(decoded["2"])   # PAN
+
+Pipeline de ML para antifraude (exemplo):
+  import xgboost as xgb
+  import pandas as pd
+
+  # Features: hora, valor, MCC, BIN, país, device_type
+  X = transactions[["hour", "amount", "mcc", "bin_country", ...]]
+  y = transactions["is_fraud"]  # label: chargeback confirmado
+
+  model = xgb.XGBClassifier(
+      n_estimators=500,
+      max_depth=6,
+      learning_rate=0.05,
+      scale_pos_weight=99   # dataset desbalanceado (1% fraude)
+  )
+  model.fit(X_train, y_train)
+  # Score em produção via ONNX (interop com Java/Go)
+```
+
+---
+
+### Kotlin — O Futuro do Ecossistema Java/jPOS
+
+**Prioridade:** 🟠 Média — interop total com Java, adoção crescente em fintechs
+**Pré-requisito:** Java sólido (você já tem)
+**Horizonte:** 1-2 meses (transição suave para quem já domina Java)
+
+```
+Por que Kotlin em pagamentos:
+  → 100% interoperável com Java — roda no mesmo jPOS
+  → Null safety nativa: elimina NPE em campos ISO opcionais
+  → Coroutines: melhor que threads para I/O assíncrono
+  → Data classes: modelos de mensagem mais limpos
+  → Extension functions: adicionar métodos ao ISOMsg sem herança
+
+Exemplo: TransactionParticipant em Kotlin vs Java
+
+  // Java (verboso)
+  public class ValidationParticipant implements TransactionParticipant {
+      public int prepare(long id, Serializable ctx) {
+          Context context = (Context) ctx;
+          ISOMsg req = (ISOMsg) context.get("REQUEST");
+          String pan = req.getString(2);
+          if (pan == null || pan.isEmpty()) return ABORTED;
+          return PREPARED;
+      }
+  }
+
+  // Kotlin (conciso, null-safe)
+  class ValidationParticipant : TransactionParticipant {
+      override fun prepare(id: Long, ctx: Serializable): Int {
+          val context = ctx as Context
+          val req = context["REQUEST"] as ISOMsg
+          val pan = req.getString(2) ?: return ABORTED
+          return PREPARED
+      }
+  }
+
+Coroutines para chamadas ao emissor:
+  suspend fun forwardToIssuer(req: ISOMsg): ISOMsg? =
+      withTimeout(30_000) {
+          mux.request(req, 30_000)
+      }
+  // Sem bloquear thread — 10x mais eficiente que thread pool
+```
+
+---
+
+### Rust — Alta Performance e Segurança de Memória
+
+**Prioridade:** 🟢 Nicho — mas emergindo em infraestrutura crítica de pagamentos
+**Pré-requisito:** Sólida base em C/sistemas (ou muito interesse em aprender)
+**Horizonte:** 6-12 meses para produtividade real
+
+```
+Onde Rust aparece em pagamentos:
+  → HSM e criptografia de baixo nível (substituindo C)
+  → Parsers de protocolo de alta performance
+  → Firmware de terminal (sem GC, sem runtime overhead)
+  → Infraestrutura de rede (substituindo C++ em load balancers)
+
+Vantagem única para pagamentos:
+  → Sem garbage collector → sem GC pause → P99 previsível
+  → Memory safety em tempo de compilação → menos CVEs
+  → FFI com C → integra com SDKs de HSM legados
+
+Parser ISO 8583 em Rust (exemplo):
+  use iso8583_rs::prelude::*;
+
+  let spec = Spec::new(/* definição de campos */);
+  let raw: &[u8] = &[0x02, 0x00, /* ... */];
+  let msg = Message::parse(raw, &spec)?;
+  let pan = msg.field(2)?;  // Result<&str, Error>
+```
+
+---
+
+### Comparativo: Quando Usar Cada Linguagem
+
+```
+Linguagem   Melhor para em pagamentos           Usado por
+──────────────────────────────────────────────────────────
+Java/jPOS   Switch completo, protocolo ISO 8583  Cielo, Rede, bancos tradicionais
+Go          Microsserviços, gateway de alto TPS  Nubank, Pismo, Stripe
+Python      ML/antifraude, analytics, scripts    Times de risco, data science
+Kotlin      Migração de Java, Android Pay        Fintechs modernas com JVM
+Rust        HSM, firmware, infraestrutura crítica Fabricantes de terminal, infra
+C/C++       Kernel EMV, terminal firmware        Ingenico, Verifone, PAX
 ```
 
 ---
@@ -421,13 +542,14 @@ O que avaliar na due diligence técnica de uma processadora:
 ```
 SE você quer...                    ESTUDE...
 ─────────────────────────────────────────────────────────
-Maior salário como engenheiro      Cloud-native + Kafka
-Trabalhar em fintech moderna       Open Finance (FAPI)
+Trabalhar em fintech moderna       Go + Open Finance (FAPI)
+Maior salário como engenheiro      Go ou Kotlin + ISO 20022
 Consultoria independente           QSA (PCI-DSS)
 Entender o futuro do Brasil        DREX + ISO 20022
-Trabalhar com antifraude           ML (XGBoost + grafos)
-Sair do Brasil                     ISO 20022 + SWIFT gpi
-Trabalhar com hardware/terminal    EMV Kernel (C/C++)
+Trabalhar com antifraude           Python (ML) + XGBoost
+Sair do Brasil                     ISO 20022 + Go + SWIFT gpi
+Trabalhar com hardware/terminal    EMV Kernel (C/C++) + Rust
+Migrar o Java existente            Kotlin (transição suave)
 Virar CTO/VP                       Produto + M&A técnica
 ```
 
