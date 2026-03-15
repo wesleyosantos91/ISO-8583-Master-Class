@@ -95,6 +95,28 @@ Java/jPOS é o padrão em bancos e processadoras tradicionais. Fintechs modernas
 
 A referência de biblioteca usada aqui é a mesma família `moov-io` para Go e `pyiso8583` para Python — ambas seguem a mesma filosofia: spec configurável por campo, pack/unpack simétrico, sem dependências pesadas.
 
+### Mapeamento de framework: jPOS → Go → Python
+
+Antes de entrar nos exemplos, entenda o que existe em cada ecossistema:
+
+```
+Componente jPOS          Go (moov-io)                    Python
+──────────────────────────────────────────────────────────────────────
+GenericPackager (spec)   iso8583.MessageSpec             pyiso8583 spec dict
+ISOMsg                   iso8583.Message                 dict com campos ISO
+Q2 Runtime               main.go + goroutines            não existe (desnecessário)
+Channel (TCP)            iso8583-connection.Connection   socket padrão / asyncio
+QMUX (correlação)        iso8583-connection (built-in)   não existe (ver nota)
+TransactionManager       middleware chain (padrão Go)    pipeline de funções
+TransactionParticipant   interface Handler               função/classe simples
+Space (contexto)         context.Context + struct        dict passado por pipeline
+Q2 deploy XML            código Go direto                código Python direto
+
+Nota Python: Python não tem um framework de switch completo equivalente
+ao jPOS. É usado para analytics, ML e scripts — não para construir
+switches de produção. Para switch em Python, use Go ou Java/jPOS.
+```
+
 ---
 
 ### Go — Fintechs de Alto Volume
@@ -102,13 +124,160 @@ A referência de biblioteca usada aqui é a mesma família `moov-io` para Go e `
 **Prioridade:** 🔴 Alta — Nubank, Pismo, PicPay, Stripe usam Go em pagamentos
 **Pré-requisito:** Java do curso é suficiente para a transição
 **Horizonte:** 2-3 meses para produtividade real
-**Biblioteca:** `github.com/moov-io/iso8583`
 
-#### Setup
+**Ecossistema moov-io (equivalente ao jPOS completo):**
 
 ```bash
-go mod init payment-switch
-go get github.com/moov-io/iso8583
+go get github.com/moov-io/iso8583            # protocolo (= GenericPackager + ISOMsg)
+go get github.com/moov-io/iso8583-connection # channel + QMUX (= Channel + QMUX)
+```
+
+#### Channel + QMUX — equivalente ao Channel e QMUX do jPOS
+
+```go
+// iso8583-connection.Connection = Channel TCP com correlação automática por STAN
+// Equivalente ao NACChannel + QMUX do jPOS — sem configurar nada a mais
+
+import (
+    connection "github.com/moov-io/iso8583-connection"
+    "github.com/moov-io/iso8583"
+)
+
+func NewIssuerConnection(host string, port int) (*connection.Connection, error) {
+    conn, err := connection.New(
+        fmt.Sprintf("%s:%d", host, port),
+        spec.Brasil,
+        readHeader,   // lê os 4 bytes de tamanho do frame (NACChannel style)
+        writeHeader,  // escreve os 4 bytes
+        connection.SendTimeout(30*time.Second),    // equivalente ao timeout do QMUX
+        connection.IdleTime(60*time.Second),       // keep-alive / echo test
+        connection.PingHandler(buildEchoRequest),  // 0800 sign-on automático
+    )
+    if err != nil {
+        return nil, err
+    }
+    conn.Connect()
+    return conn, nil
+}
+
+// Envio com correlação automática por STAN — equivalente ao mux.request(msg, 30000)
+func ForwardToIssuer(conn *connection.Connection, req *iso8583.Message) (*iso8583.Message, error) {
+    resp, err := conn.Send(req)  // bloqueia até resposta ou timeout
+    if err != nil {
+        return nil, err   // timeout → reversal necessário (mesmo conceito semana 13)
+    }
+    return resp, nil
+}
+
+// Lê header de 4 bytes (mesmo padrão NACChannel do jPOS)
+func readHeader(r io.Reader) (int, error) {
+    header := make([]byte, 4)
+    if _, err := io.ReadFull(r, header); err != nil {
+        return 0, err
+    }
+    return int(binary.BigEndian.Uint32(header)), nil
+}
+
+func writeHeader(w io.Writer, msgLen int) error {
+    header := make([]byte, 4)
+    binary.BigEndian.PutUint32(header, uint32(msgLen))
+    _, err := w.Write(header)
+    return err
+}
+```
+
+#### TransactionManager + Participants — equivalente em Go
+
+```go
+// jPOS usa XML + interface TransactionParticipant com prepare/commit/abort
+// Go usa middleware chain — mesmo conceito, sintaxe diferente
+
+// "Participant" em Go — interface simples
+type Handler interface {
+    Handle(ctx context.Context, tx *Transaction) error
+}
+
+// Transaction = o "Context" (Space) do jPOS — carrega estado entre handlers
+type Transaction struct {
+    Request      *iso8583.Message
+    Response     *iso8583.Message
+    ResponseCode string
+    Aborted      bool
+    AbortReason  string
+}
+
+// Pipeline de handlers — equivalente ao TransactionManager com lista de participants
+type TransactionManager struct {
+    handlers []Handler
+}
+
+func (tm *TransactionManager) Process(ctx context.Context, req *iso8583.Message) *iso8583.Message {
+    tx := &Transaction{Request: req}
+    for _, h := range tm.handlers {
+        if err := h.Handle(ctx, tx); err != nil || tx.Aborted {
+            break  // equivalente ao ABORTED no jPOS
+        }
+    }
+    return tx.Response
+}
+
+// Exemplo de participants equivalentes aos do curso:
+// ValidationParticipant (semana 9)
+type ValidationHandler struct{}
+func (v *ValidationHandler) Handle(ctx context.Context, tx *Transaction) error {
+    pan, _ := tx.Request.GetString(2)
+    if pan == "" {
+        tx.Aborted = true
+        tx.ResponseCode = "30" // format error
+    }
+    return nil
+}
+
+// FraudScreeningParticipant (semana 31)
+type FraudScreeningHandler struct{ redis *redis.Client }
+func (f *FraudScreeningHandler) Handle(ctx context.Context, tx *Transaction) error {
+    pan, _ := tx.Request.GetString(2)
+    if blocked := checkVelocity(f.redis, pan); blocked {
+        tx.Aborted = true
+        tx.ResponseCode = "59"
+    }
+    return nil
+}
+
+// ForwardToIssuerParticipant
+type ForwardHandler struct{ conn *connection.Connection }
+func (f *ForwardHandler) Handle(ctx context.Context, tx *Transaction) error {
+    resp, err := f.conn.Send(tx.Request)
+    if err != nil {
+        tx.ResponseCode = "91"  // timeout → precisa de reversal
+        tx.Aborted = true
+        return nil
+    }
+    tx.Response = resp
+    tx.ResponseCode, _ = resp.GetString(39)
+    return nil
+}
+
+// Montagem do switch — equivalente ao deploy XML do Q2
+func main() {
+    issuerConn, _ := NewIssuerConnection("issuer.host.com", 8000)
+
+    manager := &TransactionManager{
+        handlers: []Handler{
+            &ValidationHandler{},
+            &FraudScreeningHandler{redis: redisClient},
+            &ForwardHandler{conn: issuerConn},
+            &AuditHandler{},
+        },
+    }
+
+    // Servidor TCP — equivalente ao QServer do Q2
+    listener, _ := net.Listen("tcp", ":8583")
+    for {
+        conn, _ := listener.Accept()
+        go handleConnection(conn, manager)  // goroutine por sessão (= minSessions/maxSessions)
+    }
+}
 ```
 
 #### Spec — equivalente ao packager XML do jPOS
@@ -239,10 +408,98 @@ Conductor — emissor de cartões (ex-Visa)
 **Horizonte:** 2-3 meses para uso focado em pagamentos
 **Biblioteca:** `pyiso8583` — mesma filosofia spec/pack/unpack da moov-io
 
+#### O que existe (e o que não existe) em Python
+
+```
+jPOS / Go                  Python
+──────────────────────────────────────────────────────────────
+GenericPackager + ISOMsg   pyiso8583 (parsing/packing)        ✓
+Channel TCP                socket / asyncio                   ✓ (manual)
+QMUX (correlação)          NÃO EXISTE como biblioteca pronta  ✗
+TransactionManager         pipeline de funções (manual)       ~ (simples)
+Q2 Runtime                 NÃO EXISTE (desnecessário)         —
+
+Conclusão: Python cobre bem parsing, analytics e ML.
+Para construir um switch de produção completo, use Java/jPOS ou Go.
+Python é usado na mesma empresa para scripts, modelos e analytics —
+não para o switch em si.
+```
+
 #### Setup
 
 ```bash
 pip install pyiso8583 pandas xgboost scikit-learn
+```
+
+#### Pipeline de "participants" em Python (equivalente simplificado ao TransactionManager)
+
+```python
+# Não existe TransactionManager pronto em Python.
+# O padrão equivalente é uma pipeline de funções — útil para scripts e testes.
+
+from dataclasses import dataclass, field
+from typing import Callable, List
+import pyiso8583
+from spec.brasil import BRASIL_SPEC
+
+@dataclass
+class Transaction:
+    """Equivalente ao Context/Space do jPOS"""
+    request: dict         # mensagem ISO decodificada
+    response: dict = None
+    response_code: str = None
+    aborted: bool = False
+    abort_reason: str = None
+
+# Tipo de um "participant" em Python
+Participant = Callable[[Transaction], None]
+
+def run_pipeline(msg_raw: bytes, participants: List[Participant]) -> dict:
+    """Equivalente ao TransactionManager.process()"""
+    decoded, _ = pyiso8583.decode(msg_raw, BRASIL_SPEC)
+    tx = Transaction(request=decoded)
+
+    for participant in participants:
+        participant(tx)
+        if tx.aborted:
+            break
+
+    if tx.response is None:
+        tx.response = {**tx.request, "t": "0210", "39": tx.response_code or "96"}
+
+    _, packed = pyiso8583.encode(tx.response, BRASIL_SPEC)
+    return packed
+
+# Participants equivalentes:
+
+def validate_fields(tx: Transaction) -> None:
+    """ValidationParticipant — semana 9"""
+    if not tx.request.get("2"):
+        tx.aborted = True
+        tx.response_code = "30"
+
+def check_fraud(tx: Transaction) -> None:
+    """FraudScreeningParticipant — semana 31"""
+    pan = tx.request.get("2", "")
+    if check_velocity_redis(pan):
+        tx.aborted = True
+        tx.response_code = "59"
+
+def forward_to_issuer(tx: Transaction) -> None:
+    """ForwardToIssuerParticipant — semana 10"""
+    resp = send_to_issuer_tcp(tx.request)  # implementação com socket
+    if resp is None:
+        tx.aborted = True
+        tx.response_code = "91"  # timeout → precisa reversal
+        return
+    tx.response = resp
+    tx.response_code = resp.get("39")
+
+# Montagem do pipeline
+pipeline = [validate_fields, check_fraud, forward_to_issuer]
+
+# Uso — útil para testes e scripts, não para switch de produção
+response_raw = run_pipeline(raw_message, pipeline)
 ```
 
 #### Spec — mesmo conceito do packager, em dicionário Python
