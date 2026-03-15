@@ -20,7 +20,7 @@ Um programa de formação completa para se tornar **especialista em mensageria d
 ## Estrutura
 
 ```
-iso8583-masterclass/
+./
 │
 ├── README.md                     ← Você está aqui
 ├── CHECKLIST.md                  ← Acompanhe seu progresso
