@@ -371,18 +371,27 @@ e) Compra com chip e PIN, portador nega que realizou
 
 ### Exercício 2 — Implementar ChargebackClassifier
 
+O input agrupa os dados relevantes para classificação:
+
 ```java
-/**
- * Implemente este classificador que recebe dados de uma disputa e
- * retorna o reason code mais adequado, a dificuldade de defesa,
- * e a documentação necessária.
- */
+public record ChargebackInput(
+    String channel,          // "CP" (card-present) ou "CNP" (e-commerce)
+    String eci,              // ECI do 3DS: "05", "06", "07", null
+    boolean emvPresent,      // DE55 estava presente na transação original
+    boolean pinVerified,     // DE52 presente e validado com sucesso
+    String disputeReason,    // Motivo informado pelo portador (texto livre)
+    BigDecimal amount,
+    String merchantCategory  // MCC
+) {}
+```
+
+```java
 public class ChargebackClassifier {
 
     public record ClassificationResult(
-        String reasonCode,          // ex: "10.4", "12.6", "13.1"
+        String reasonCode,
         String reasonDescription,
-        DefenseDifficulty difficulty, // EASY, MEDIUM, HARD, IMPOSSIBLE
+        DefenseDifficulty difficulty,
         List<String> requiredDocuments,
         String recommendation       // "REPRESENT" ou "ACCEPT"
     ) {}
@@ -390,14 +399,64 @@ public class ChargebackClassifier {
     public enum DefenseDifficulty { EASY, MEDIUM, HARD, IMPOSSIBLE }
 
     public ClassificationResult classify(ChargebackInput input) {
-        // TODO: implemente usando reason codes da tabela Visa
-        // Dica: considere
-        //   - channel (CP vs CNP)
-        //   - 3DS status (authenticated, attempted, not attempted)
-        //   - EMV data present (DE55)
-        //   - PIN verified
-        //   - disputeReason
-        throw new UnsupportedOperationException("Implemente");
+        // Fraud CNP — o mais comum e o mais difícil de defender sem 3DS
+        if ("CNP".equals(input.channel())) {
+            if ("05".equals(input.eci()) || "02".equals(input.eci())) {
+                // 3DS autenticado → emissor tem liability → fácil de ganhar
+                return new ClassificationResult("10.4",
+                    "CNP Fraud — 3DS Authenticated",
+                    DefenseDifficulty.EASY,
+                    List.of("3DS authentication data", "ECI value", "CAVV/AAV"),
+                    "REPRESENT");
+            }
+            if ("06".equals(input.eci()) || "01".equals(input.eci())) {
+                // 3DS attempted — alguma proteção
+                return new ClassificationResult("10.4",
+                    "CNP Fraud — 3DS Attempted",
+                    DefenseDifficulty.MEDIUM,
+                    List.of("3DS attempt evidence", "device fingerprint", "order details"),
+                    "REPRESENT");
+            }
+            // Sem 3DS: quase impossível defender fraude CNP
+            return new ClassificationResult("10.4",
+                "CNP Fraud — No 3DS",
+                DefenseDifficulty.IMPOSSIBLE,
+                List.of(),
+                "ACCEPT");
+        }
+
+        // Card-present: EMV/chip é a principal defesa
+        if ("CP".equals(input.channel())) {
+            if (input.emvPresent() && input.pinVerified()) {
+                // Chip + PIN: muito forte, quase impossível perder
+                return new ClassificationResult("10.2",
+                    "Counterfeit Fraud — Chip + PIN",
+                    DefenseDifficulty.EASY,
+                    List.of("DE55 EMV data", "PIN verification result", "terminal logs"),
+                    "REPRESENT");
+            }
+            if (input.emvPresent()) {
+                // Chip sem PIN (contactless ou assinatura)
+                return new ClassificationResult("10.2",
+                    "Counterfeit Fraud — Chip no PIN",
+                    DefenseDifficulty.MEDIUM,
+                    List.of("DE55 EMV data", "CVM results from DE55 tag 9F34"),
+                    "REPRESENT");
+            }
+            // Trato magnético: fraco
+            return new ClassificationResult("10.2",
+                "Counterfeit Fraud — Magnetic Stripe",
+                DefenseDifficulty.HARD,
+                List.of("POS terminal receipt", "video evidence if available"),
+                "ACCEPT");
+        }
+
+        // Fallback genérico
+        return new ClassificationResult("13.9",
+            "Other — Manual Review Required",
+            DefenseDifficulty.MEDIUM,
+            List.of("All available transaction evidence"),
+            "MANUAL_REVIEW");
     }
 }
 ```
@@ -406,14 +465,15 @@ public class ChargebackClassifier {
 
 ```java
 /**
- * Implemente o monitor que calcula o chargeback ratio por merchant
- * e gera alertas quando os limiares são atingidos.
- *
  * Chargeback Ratio = (Nº chargebacks do mês) / (Nº transações do mês anterior)
- * Alerta Visa VDMP: ratio > 0.0065 (0.65%) com volume > 100 CBs
- * Alerta Mastercard ECP: ratio > 0.015 (1.5%) com volume > 100 CBs
+ * Alerta Visa VDMP:       ratio > 0.0065 (0.65%) com volume >= 100 CBs
+ * Alerta Mastercard ECP:  ratio > 0.015  (1.5%)  com volume >= 100 CBs
  */
 public class ChargebackRatioMonitor {
+
+    private static final double VISA_ALERT_RATIO   = 0.0065;
+    private static final double MASTER_ALERT_RATIO = 0.015;
+    private static final int    MIN_CB_VOLUME      = 100;
 
     public record MerchantRatio(
         String merchantId,
@@ -429,47 +489,96 @@ public class ChargebackRatioMonitor {
             List<Transaction> transactions,
             List<Chargeback> chargebacks,
             YearMonth month) {
-        // TODO: implemente
-        // Agrupe transações por merchant do mês anterior
-        // Agrupe chargebacks por merchant do mês atual
-        // Calcule ratio e determine alertas
-        throw new UnsupportedOperationException("Implemente");
+
+        YearMonth prevMonth = month.minusMonths(1);
+
+        // Agrupa transações aprovadas do MÊS ANTERIOR por merchant
+        Map<String, Long> txnsByMerchant = transactions.stream()
+            .filter(t -> YearMonth.from(t.txnDateTime()).equals(prevMonth))
+            .filter(t -> "00".equals(t.responseCode()))
+            .collect(Collectors.groupingBy(Transaction::merchantId, Collectors.counting()));
+
+        // Agrupa chargebacks do MÊS ATUAL por merchant
+        Map<String, List<Chargeback>> cbsByMerchant = chargebacks.stream()
+            .filter(cb -> YearMonth.from(cb.receivedDate()).equals(month))
+            .collect(Collectors.groupingBy(Chargeback::merchantId));
+
+        // Calcula ratio para cada merchant com chargeback
+        return cbsByMerchant.entrySet().stream().map(entry -> {
+            String merchantId = entry.getKey();
+            int cbCount       = entry.getValue().size();
+            long txnCount     = txnsByMerchant.getOrDefault(merchantId, 1L); // evita div/0
+            double ratio      = (double) cbCount / txnCount;
+            String name       = entry.getValue().get(0).merchantName();
+
+            return new MerchantRatio(
+                merchantId, name, cbCount, (int) txnCount, ratio,
+                cbCount >= MIN_CB_VOLUME && ratio > VISA_ALERT_RATIO,
+                cbCount >= MIN_CB_VOLUME && ratio > MASTER_ALERT_RATIO
+            );
+        })
+        .sorted(Comparator.comparingDouble(MerchantRatio::ratio).reversed())
+        .collect(Collectors.toList());
     }
 }
 ```
 
 ### Exercício 4 — Retrieval Request Handler (MTI 1644)
 
-Antes de um chargeback, o emissor pode enviar um **Retrieval Request** pedindo documentos da transação original. O switch precisa responder:
+Antes de um chargeback, o emissor pode enviar um **Retrieval Request** pedindo documentos da transação original. O switch precisa responder com MTI 1646:
 
 ```java
-/**
- * Implemente o handler para Retrieval Requests (MTI 1644/1646).
- *
- * Request:  1644 DE37=RRN original, DE38=Auth code original
- * Response: 1646 DE39=00 (found) ou DE39=25 (not found)
- *           + dados da transação original em campos apropriados
- */
 public class RetrievalRequestHandler implements TransactionParticipant {
 
     private final TransactionRepository repository;
 
     @Override
     public int prepare(long id, Serializable context) {
-        Context ctx = (Context) context;
+        Context ctx    = (Context) context;
         ISOMsg request = ctx.get("REQUEST");
 
-        // TODO: implemente
-        // 1. Verifique se é MTI 1644
-        // 2. Busque a transação por DE37 (RRN)
-        // 3. Monte resposta 1646 com dados originais
-        // 4. DE39=00 se encontrado, DE39=25 se não encontrado
-        // 5. Inclua DE 31 (File Transfer Request/Response) se necessário
+        try {
+            // 1. Só processa MTI 1644
+            if (!"1644".equals(request.getMTI())) return PREPARED;
 
-        throw new UnsupportedOperationException("Implemente");
+            String rrn      = request.getString(37); // RRN da transação original
+            String authCode = request.getString(38); // Auth code da transação original
+
+            // 2. Busca transação no repositório
+            TransactionRecord txn = repository.findByRrnAndAuthCode(rrn, authCode);
+
+            ISOMsg response = (ISOMsg) request.clone();
+            response.setMTI("1646");
+
+            if (txn == null) {
+                // 3a. Não encontrado: DE39=25 (Unable to locate record on file)
+                response.set(39, "25");
+            } else {
+                // 3b. Encontrado: retorna dados originais
+                response.set(39, "00");
+                response.set(2,  txn.maskedPan());
+                response.set(3,  txn.processingCode());
+                response.set(4,  String.format("%012d",
+                                  txn.amount().movePointRight(2).longValue()));
+                response.set(12, txn.txnDateTime().format(
+                                  java.time.format.DateTimeFormatter.ofPattern("HHmmss")));
+                response.set(13, txn.txnDateTime().format(
+                                  java.time.format.DateTimeFormatter.ofPattern("MMdd")));
+                response.set(38, txn.authorizationCode());
+                response.set(41, txn.terminalId());
+                response.set(42, txn.merchantId());
+                response.set(43, txn.merchantName());
+            }
+
+            ctx.put("RESPONSE", response);
+            return PREPARED;
+
+        } catch (ISOException e) {
+            ctx.put("RESPONSE_CODE", "96");
+            return ABORTED;
+        }
     }
 }
-```
 
 ### Exercício 5 — Análise de Caso Real
 

@@ -610,3 +610,5 @@ Após esta semana, você deve ter clareza absoluta sobre:
 7. **Parcelamento** como diferencial brasileiro
 8. **PIX vs cartão** — coexistência e diferenças técnicas
 9. **Por que decisões técnicas impactam receita**
+
+Estes 9 conceitos formam a base de tudo que vem a seguir. Sem eles, código correto ainda produz sistemas incorretos. Na Semana 2, você desce ao nível de bytes e entende a anatomia exata de uma mensagem ISO 8583.
