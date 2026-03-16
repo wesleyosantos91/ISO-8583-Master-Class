@@ -76,7 +76,15 @@ java -jar acquirer-simulator/target/acquirer-simulator.jar
 ## Docker
 
 ```bash
+cd docker
 docker-compose up -d
+
+# Stack completo inclui:
+# - payment-switch (porta 8583)
+# - issuer-simulator (porta 8584)
+# - acquirer-simulator
+# - Prometheus (porta 9090) — metricas
+# - Grafana (porta 3000) — dashboards (admin/admin)
 ```
 
 ## Configuração
