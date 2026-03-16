@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Canais TCP — conexões ISO 8583 entre switch e outros sistemas.
+
+  EXERCÍCIO SEMANA 8: Configure o channel para o emissor simulado.
+  O NACChannel usa header de 2 bytes com tamanho da mensagem.
+-->
+<channel-adaptor name="issuer-channel"
+                 class="org.jpos.q2.iso.ChannelAdaptor"
+                 logger="Q2" realm="issuer-channel">
+
+    <channel class="org.jpos.iso.channel.NACChannel"
+             packager="org.jpos.iso.packager.GenericPackager"
+             header="6000000000">
+
+        <property name="host"    value="issuer-simulator" />
+        <property name="port"    value="8583" />
+        <property name="packager-config" value="cfg/iso87ascii.xml" />
+        <property name="timeout" value="30000" />
+    </channel>
+
+    <in>issuer-send</in>
+    <out>issuer-receive</out>
+    <reconnect-delay>10000</reconnect-delay>
+</channel-adaptor>

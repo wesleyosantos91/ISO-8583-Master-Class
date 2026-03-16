@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  QMUX — correlação de mensagens request/response via STAN + Terminal.
+
+  EXERCÍCIO SEMANA 8: Entenda como o MUX correlaciona request com response.
+  Chave de correlação padrão: DE 11 (STAN) + DE 41 (Terminal ID).
+-->
+<mux name="local-issuer"
+     class="org.jpos.q2.iso.QMUX"
+     logger="Q2" realm="local-issuer">
+
+    <in>issuer-receive</in>
+    <out>issuer-send</out>
+
+    <!-- Campos usados para correlacionar request com response -->
+    <key>11</key>   <!-- STAN -->
+    <key>41</key>   <!-- Terminal ID -->
+
+    <!-- Timeout para esperar resposta do emissor -->
+    <ready>issuer-channel.ready</ready>
+</mux>

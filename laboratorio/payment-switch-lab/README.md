@@ -81,9 +81,41 @@ docker-compose up -d
 
 ## Configuração
 
-- `deploy/05_txnmgr.xml` — TransactionManager (participants e groups)
-- `deploy/10_channel.xml` — Canais TCP
-- `deploy/20_mux.xml` — QMUX (correlação)
-- `deploy/30_server.xml` — QServer (recebe conexões)
-- `cfg/iso87ascii.xml` — Packager
-- `cfg/bin-table.csv` — Tabela de BINs
+- `src/dist/deploy/05_txnmgr.xml` — TransactionManager (participants e groups)
+- `src/dist/deploy/10_channel.xml` — Canais TCP (NACChannel para emissor)
+- `src/dist/deploy/20_mux.xml` — QMUX (correlação por STAN + Terminal)
+- `src/dist/deploy/30_server.xml` — QServer (recebe conexões na 8583)
+- `src/main/resources/cfg/iso87ascii.xml` — Packager ISO 8583:1987 ASCII
+- `iso-packager/src/main/resources/bin-table.csv` — Tabela de BINs (14 rotas)
+
+## Context Keys
+
+O `ContextKeys.java` centraliza todas as chaves usadas no Context do TransactionManager:
+
+```java
+ContextKeys.REQUEST          // ISOMsg original
+ContextKeys.RESPONSE         // ISOMsg de resposta
+ContextKeys.RESPONSE_CODE    // DE39 quando não há ISOMsg
+ContextKeys.DESTINATION_MUX  // QMUX destino (selecionado por RouteByBIN)
+ContextKeys.IS_ON_US         // boolean — rota on-us?
+ContextKeys.NETWORK          // bandeira (VISA, MASTERCARD, ELO)
+ContextKeys.NEEDS_REVERSAL   // boolean — timeout do emissor?
+```
+
+## Exercícios por Semana
+
+| Semana | O que implementar |
+|--------|-------------------|
+| 3 | `HexUtils`, `BcdUtils` (iso-core) |
+| 6 | Packager XML customizado (iso-packager) |
+| 7 | `QueryHost`, `ValidateMessage`, `BuildResponse`, `AuditLog` (txn-manager) |
+| 8 | QMUX config, correlação STAN + Terminal |
+| 9 | Validações por campo: Luhn (DE2), Amount (DE4), POS Entry Mode (DE22) |
+| 10 | `ForwardToIssuer` + `IssuerSimulator` |
+| 11 | `RouteByBIN`, `BINTable.lookup()`, `InstallmentParser` |
+| 13 | Auto-reversal por timeout em `ForwardToIssuer.abort()` |
+| 16 | `CheckDuplicate` com Caffeine cache |
+| 18 | `PANUtils.mask()` (PCI compliant) |
+| 21 | `SwitchMetrics` com Micrometer + Prometheus |
+| 23 | `ReconciliationEngine` — auth vs clearing |
+| 33 | Load testing com `ISOLoadTester` + RateLimiter |

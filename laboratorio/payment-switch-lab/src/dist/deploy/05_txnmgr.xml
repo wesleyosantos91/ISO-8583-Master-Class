@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TransactionManager — pipeline de processamento de transações.
+
+  EXERCÍCIO SEMANA 7: Configure os participants e groups.
+  Referência: jPOS Programmer's Guide, cap. 8 (TransactionManager).
+-->
+<txnmgr name="txnmgr" class="org.jpos.transaction.TransactionManager"
+         logger="Q2" realm="txnmgr">
+
+    <property name="queue"        value="TXNMGR" />
+    <property name="sessions"     value="2" />
+    <property name="max-sessions" value="128" />
+    <property name="debug"        value="true" />
+
+    <!-- Primeiro participant: extrai mensagem e decide grupo -->
+    <participant class="com.lab.participants.QueryHost" />
+
+    <!-- Grupo: autorização (0100, 0200) -->
+    <group name="authorization">
+        <participant class="com.lab.participants.ValidateMessage" />
+        <participant class="com.lab.participants.CheckDuplicate" />
+        <participant class="com.lab.participants.RouteByBIN" />
+        <participant class="com.lab.participants.ForwardToIssuer" />
+    </group>
+
+    <!-- Grupo: reversal (0400) -->
+    <group name="reversal">
+        <participant class="com.lab.participants.ValidateMessage" />
+        <!-- TODO Semana 13: FindOriginal + ProcessReversal -->
+    </group>
+
+    <!-- Grupo: network management (0800) -->
+    <group name="network-mgmt">
+        <!-- TODO Semana 15: EchoHandler, SignOnHandler -->
+    </group>
+
+    <!-- Participants finais — sempre executam -->
+    <participant class="com.lab.participants.BuildResponse" />
+    <participant class="com.lab.participants.AuditLog" />
+
+</txnmgr>

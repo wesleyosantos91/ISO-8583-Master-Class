@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  QServer — recebe conexões TCP dos adquirentes na porta 8583.
+
+  EXERCÍCIO SEMANA 7: Configure o server para receber mensagens.
+  Cada mensagem recebida é colocada no Space para o TransactionManager processar.
+-->
+<server name="switch-server"
+        class="org.jpos.q2.iso.QServer"
+        logger="Q2" realm="switch-server">
+
+    <attr name="port" type="java.lang.Integer">8583</attr>
+    <attr name="minSessions" type="java.lang.Integer">1</attr>
+    <attr name="maxSessions" type="java.lang.Integer">100</attr>
+
+    <channel class="org.jpos.iso.channel.NACChannel"
+             packager="org.jpos.iso.packager.GenericPackager"
+             header="6000000000">
+        <property name="packager-config" value="cfg/iso87ascii.xml" />
+    </channel>
+
+    <request-listener class="org.jpos.transaction.TransactionManager"
+                      logger="Q2" realm="incoming">
+        <property name="queue" value="TXNMGR" />
+        <property name="timeout" value="60000" />
+    </request-listener>
+</server>
