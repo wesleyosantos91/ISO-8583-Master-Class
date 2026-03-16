@@ -134,6 +134,34 @@ public static boolean luhnCheck(String pan) {
 59 = E-commerce
 ```
 
+### DE 18 — Merchant Type (MCC — Merchant Category Code)
+- **Formato:** n 4 fixo
+- **O que é:** Categoriza o tipo de negócio do merchant (padrão ISO 18245)
+- **Por que importa:**
+
+```
+MCC define:
+  1. Taxa de interchange (restaurante ≠ supermercado)
+  2. Regras de benefício/voucher: VA só em supermercado, VR só em restaurante
+  3. Regras de risco: cassinos, viagens = alto risco
+  4. Benefícios do portador: cashback duplo em posto, milhas em companhia aérea
+```
+
+**MCCs comuns no Brasil:**
+```
+5411 = Grocery Stores, Supermarkets       → Vale Alimentação ✓
+5499 = Misc Food Stores                   → VA e VR ✓
+5812 = Eating Places, Restaurants         → Vale Refeição ✓
+5814 = Fast Food Restaurants              → Vale Refeição ✓
+5541 = Service Stations (Gas Stations)    → Vale Combustível ✓
+5912 = Drug Stores and Pharmacies         → Benefícios saúde
+7011 = Hotels and Motels                  → Pre-auth obrigatório
+7512 = Car Rental Agencies                → Pre-auth obrigatório
+4111 = Transportation Commuter            → Vale Transporte (onde aplicável)
+```
+
+**Troubleshooting:** DE39=57 (Transaction not permitted) frequentemente é causado por MCC cadastrado errado para o tipo de benefício.
+
 ### DE 32 — Acquiring Institution ID
 - **Formato:** n ..11 LLVAR
 - **Uso:** Identifica o adquirente. Usado no roteamento de volta (response) e no clearing.
@@ -185,6 +213,55 @@ public static boolean luhnCheck(String pan) {
 ### DE 42 — Card Acceptor Identification Code
 - **Formato:** ans 15 fixo
 - **Uso:** Identifica o merchant (establishment). Aparece na fatura.
+
+### DE 43 — Card Acceptor Name/Location
+- **Formato:** ans 40 fixo
+- **Uso:** Nome e localização do merchant — é o que aparece no extrato do portador
+- **Estrutura típica:** `NOME LOJA        CIDADE BR`
+- **Por que importa:** Friendly fraud começa quando o portador não reconhece este nome.
+  Um nome vago como "TECH SOLUTIONS" gera muito mais chargeback que "AMAZON.COM.BR".
+
+### DE 48 — Additional Data — Private Use ★
+- **Formato:** ans ...999 LLLVAR
+- **Uso:** Campo livre para dados privados entre partes da rede. Muito usado no Brasil.
+- **Conteúdo varia por rede/adquirente**, mas padrões comuns:
+
+**Parcelamento (formato típico adquirentes BR):**
+```
+Byte 1-2: tipo de parcelamento
+  "01" = parcelamento pelo lojista (sem juros)
+  "02" = parcelamento pelo emissor (com juros)
+
+Byte 3-4: número de parcelas
+  "03" = 3x, "12" = 12x
+
+Exemplo completo: "0103" = parcelamento lojista em 3x
+                  "0212" = parcelamento emissor em 12x
+```
+
+**Dados EMV adicionais:**
+```
+// Quando DE55 não é suficiente, dados extras vêm no DE48
+```
+
+**Subtag structures (alguns adquirentes usam TLV dentro do DE48):**
+```java
+// Montando DE48 com dados de parcelamento
+public String buildDE48Installment(int parcelas, boolean lojista) {
+    String tipo = lojista ? "01" : "02";
+    return String.format("%s%02d", tipo, parcelas);
+}
+
+// Lendo DE48
+public InstallmentInfo parseDE48(String de48) {
+    if (de48 == null || de48.length() < 4) return null;
+    String tipo = de48.substring(0, 2);
+    int parcelas = Integer.parseInt(de48.substring(2, 4));
+    return new InstallmentInfo(parcelas, "01".equals(tipo));
+}
+```
+
+> **Atenção PCI:** Nunca coloque dados sensíveis (CVV, track data) em DE48. É texto livre e pode aparecer em logs.
 
 ### DE 49 — Currency Code, Transaction
 - **Formato:** n 3 fixo
@@ -486,6 +563,179 @@ Monte um cenário de stress: envie 100 transações simultâneas para o switch. 
 - 10% nunca responde (timeout)
 
 Analise: quantas aprovadas? Quantas com timeout? Quantos reversals gerados? Qual a latência P50/P95/P99?
+
+---
+
+# Outros Fluxos Essenciais
+
+## Estorno (Refund) vs Reversal — Diferença crítica
+
+Esta é uma das confusões mais comuns em times de desenvolvimento. **São mecanismos completamente diferentes.**
+
+| | Reversal (0400/0420) | Refund/Estorno (0200 com DE3=20xxxx) |
+|---|---|---|
+| **Quando** | Falha técnica (timeout, erro) | Devolução voluntária (cliente desistiu) |
+| **Quem inicia** | Switch/adquirente automaticamente | Merchant inicia no POS/sistema |
+| **Timing** | Antes do clearing (mesma sessão) | Dias/semanas após a transação original |
+| **Impacto no clearing** | Transação não entra no clearing | Nova transação de crédito ao portador |
+| **Referência original** | DE 90 obrigatório (dados originais) | RRN referenciando original (opcional em alguns) |
+| **MTI** | 0400 (request) / 0410 (response) | 0200 (novo request) / 0210 (response) |
+| **DE3** | Mesmo da original | `200030` (crédito) / `200020` (débito) |
+
+### Fluxo de Refund/Estorno
+
+```
+Compra original (D+0):
+  POS → Switch: 0200 DE3=003000 DE4=000000050000 DE37=RRN123456
+  Switch → Emissor: 0200
+  Emissor → Switch: 0210 DE39=00 DE38=AUTH01
+  POS ← Switch: 0210 DE39=00
+
+Estorno (D+5, merchant decide devolver):
+  POS → Switch: 0200 DE3=200030 DE4=000000050000 DE37=RRNestorno01
+                     (valor pode ser parcial — partial refund)
+  Switch → Emissor: 0200
+  Emissor → Switch: 0210 DE39=00  ← credita o portador
+  POS ← Switch: 0210 DE39=00 (comprovante "ESTORNO APROVADO")
+```
+
+```java
+// Montando mensagem de estorno
+public ISOMsg buildRefund(ISOMsg originalTxn, long refundAmount) throws ISOException {
+    ISOMsg refund = new ISOMsg();
+    refund.setMTI("0200");
+    refund.set(2, originalTxn.getString(2));  // mesmo PAN
+    refund.set(3, "200030");                   // DE3 = estorno crédito
+    refund.set(4, String.format("%012d", refundAmount)); // valor do estorno
+    refund.set(11, generateSTAN());            // novo STAN
+    refund.set(37, generateRRN());             // novo RRN
+    refund.set(41, originalTxn.getString(41)); // mesmo terminal
+    refund.set(42, originalTxn.getString(42)); // mesmo merchant
+    refund.set(49, originalTxn.getString(49)); // mesma moeda
+
+    // Referência à transação original (boas práticas, pode ser via DE48 ou DE62)
+    // Verificar requisito da rede
+    return refund;
+}
+```
+
+**Partial Refund:** O valor do estorno pode ser menor que o original. Ex: cliente devolveu 1 item de 3 → refund de R$50 de uma compra de R$150.
+
+---
+
+## Pre-autorização (Pre-auth)
+
+Usada quando o valor final não é conhecido no momento do check-in: hotéis, locadoras, postos de combustível com pré-pagamento.
+
+### Fluxo completo de pre-auth
+
+```mermaid
+sequenceDiagram
+    participant POS
+    participant Switch
+    participant Emissor
+
+    Note over POS: Check-in hotel — valor estimado
+    POS->>Switch: 0100 DE3=003000 DE4=000000200000 DE25=06
+    Note right of Switch: DE25=06 → Pre-authorization
+    Switch->>Emissor: 0100
+    Emissor->>Switch: 0110 DE39=00 DE38=AUTH_PRE
+    Switch->>POS: 0110 DE39=00
+    Note over POS: Limite reservado R$2.000<br/>Hóspede usa os serviços...
+
+    Note over POS: Check-out — valor real R$1.750
+    POS->>Switch: 0200 DE3=003000 DE4=000000175000 DE25=00
+    Note right of Switch: Completion (captura com valor real)
+    Switch->>Emissor: 0200
+    Emissor->>Switch: 0210 DE39=00
+    Switch->>POS: 0210 DE39=00
+    Note over Emissor: Libera reserva de R$2.000<br/>Debita R$1.750
+```
+
+**Pontos críticos:**
+- DE25=06 sinaliza pre-auth (authorization only, não captura)
+- O valor final pode ser **menor OU maior** que o pré-autorizado (regras variam por rede — Visa permite +15% em hotel, +25% em locadora)
+- Pre-auth expira em 7 dias (padrão) — depois o limite é liberado automaticamente
+- Se o merchant não fizer a completion (0200), o portador fica com limite bloqueado — causa chargeback!
+
+```java
+// Verificando se é pre-auth pelo DE25
+public boolean isPreAuth(ISOMsg msg) throws ISOException {
+    return "06".equals(msg.getString(25));
+}
+
+// Verificando se é completion de pre-auth
+public boolean isPreAuthCompletion(ISOMsg msg) throws ISOException {
+    String mti = msg.getMTI();
+    String de25 = msg.getString(25);
+    // Completion: 0200 com DE25=00 (ou sem DE25)
+    return "0200".equals(mti) && (de25 == null || "00".equals(de25));
+}
+```
+
+**Incremental Authorization (hotels, delivery):**
+Algumas redes (Visa, Mastercard) permitem aumentar o valor pré-autorizado via novas 0100 com referência ao auth original, sem novo pre-auth completo.
+
+---
+
+## Saque (Cash Withdrawal) e Cashback
+
+### Saque em ATM — Single message
+
+```
+0200 com:
+  DE3 = 012000 (saque conta corrente) ou 011000 (poupança)
+  DE4 = valor do saque
+  DE52 = PIN Block (obrigatório)
+  DE18 = 6011 (MCC de ATM) ou 6010 (branch)
+
+Fluxo:
+  ATM → Switch: 0200 DE3=012000 DE52=[PIN]
+  Switch → Emissor: 0200
+  Emissor verifica saldo + PIN → 0210 DE39=00
+  ATM dispensa o dinheiro → imprime comprovante
+
+Se ATM dispensou mas não recebeu 0210:
+  → Gera reversal 0420 ANTES de dispensar novamente
+  → Se já dispensou: log de exceção, reconciliação manual
+```
+
+### Cashback (compra + saque)
+
+```
+0200 com:
+  DE3 = 092000 (purchase + cash, from checking)
+  DE4 = valor TOTAL (compra + saque)
+  DE54 = valor do saque separado (Additional Amounts)
+  DE52 = PIN obrigatório
+
+Exemplo: Compra R$100 + R$50 cashback = DE4=150,00 + DE54=50,00
+```
+
+```java
+// DE54 — Additional Amounts (para cashback)
+// Formato: [Account Type 2][Amount Type 2][Currency 3][X 1][Amount 12]
+// Exemplo: "202986C000000005000" = corrente, cash, BRL, crédito, R$50,00
+public String buildDE54Cashback(long cashbackAmount, String currency) {
+    return String.format("202%sC%012d", currency, cashbackAmount);
+}
+```
+
+---
+
+## Consulta de Saldo (Balance Inquiry)
+
+```
+0200 com:
+  DE3 = 300000 (saldo default) ou 302000 (corrente) ou 301000 (poupança)
+  DE4 = 000000000000 (zero — não há valor na transação)
+  DE52 = PIN (obrigatório em ATM)
+
+Response (0210):
+  DE39 = 00
+  DE54 = saldo disponível
+  (alguns emissores usam campo privado para saldo)
+```
 
 ---
 
