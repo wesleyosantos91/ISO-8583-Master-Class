@@ -1,0 +1,15 @@
+# Prometheus configuration — payment-switch-lab
+# Referencia: Semana 21 — Observabilidade
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'payment-switch'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['switch:9091']
+        labels:
+          app: 'payment-switch'
+          environment: 'lab'

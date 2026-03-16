@@ -9,12 +9,16 @@ services:
     container_name: payment-switch
     ports:
       - "8583:8583"
+      - "9091:9091"   # Prometheus metrics endpoint
     networks:
       - payment-net
     depends_on:
       - issuer-simulator
+    restart: unless-stopped
+    environment:
+      - JAVA_OPTS=-Xms256m -Xmx512m -XX:+UseZGC
     healthcheck:
-      test: ["CMD", "echo", "health"]
+      test: ["CMD-SHELL", "java -version || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -28,16 +32,52 @@ services:
       - "8584:8583"
     networks:
       - payment-net
+    restart: unless-stopped
+    environment:
+      - JAVA_OPTS=-Xms128m -Xmx256m
+    healthcheck:
+      test: ["CMD-SHELL", "java -version || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-  # Futuro: Prometheus + Grafana para métricas (Semana 21)
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   volumes:
-  #     - ./prometheus.yml:/etc/prometheus/prometheus.yml
-  #   ports:
-  #     - "9090:9090"
-  #   networks:
-  #     - payment-net
+  acquirer-simulator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.acquirer
+    container_name: acquirer-sim
+    networks:
+      - payment-net
+    depends_on:
+      - switch
+    restart: "no"
+    environment:
+      - SWITCH_HOST=switch
+      - SWITCH_PORT=8583
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - payment-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - payment-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
 
 networks:
   payment-net:

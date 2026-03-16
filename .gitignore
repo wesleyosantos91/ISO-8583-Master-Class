@@ -1,0 +1,28 @@
+# Build output
+target/
+*/target/
+**/target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Maven
+*.jar
+!src/
+pom.xml.bak
+
+# Logs
+*.log
+logs/
+
+# Docker volumes
+data/
