@@ -289,7 +289,7 @@ Hipóteses:
 
 ---
 
-### Catálogo de Falhas — 10 cenários essenciais
+### Catálogo de Falhas — 15 cenários essenciais
 
 | # | Sintoma | Causa comum | Diagnóstico | Correção |
 |---|---------|-------------|-------------|----------|
@@ -303,9 +303,185 @@ Hipóteses:
 | 8 | Reversal não encontrado (DE39=76) | STAN do reversal bate com original? | Log do reversal + DE90 | Verificar copyField(11) — deve copiar STAN original, não gerar novo no DE90 |
 | 9 | Auth sem clearing (47 txns) | Captura não enviada pelo merchant | Verificar 0220 no log | Alertar merchant, verificar janela |
 | 10 | DE39=57 em voucher | MCC não cadastrado para o tipo de benefício | Verificar DE18 vs regra de voucher | Cadastrar MCC correto ou corrigir validação |
+| 11 | CVV2 failure em massa (DE39=N7) | Campo DE48 com CVV2 em posição errada | Comparar DE48 parse com spec da bandeira | Corrigir subelemento de CVV2 no parser |
+| 12 | Stand-in aprovando fora dos limites | Critérios do stand-in mal configurados | Verificar regras de stand-in vs política | Revisar limite de valor e BINs elegíveis |
+| 13 | Contactless caindo para fallback chip | Floor limit do terminal desatualizado | Verificar DE60 ou parâmetros do terminal | Atualizar floor limit via parametrização remota |
+| 14 | Valor arredondado incorreto em multi-moeda | Rounding mode errado na conversão | Comparar DE4 vs DE6 (cardholder billing) | Usar `HALF_UP` e atentar ao exponent da moeda |
+| 15 | Memory leak em produção após 48h | `LateResponseDetector.pendingSTANs` crescendo sem expirar | Monitorar heap + size do map | Adicionar TTL no cleanup: `pendingSTANs.entrySet().removeIf(e → e.getValue().isBefore(cutoff))` |
+
+---
+
+### Cenário F — CVV2 Failure em Massa
+
+```
+Sintoma: Taxa de DE39=N7 (CVV2 failure) subindo de 0.1% para 8% em transações CNP
+Todos os merchants afetados. Chip e débito funcionando normalmente.
+```
+
+**Diagnóstico:**
+```
+1. N7 é um response code proprietário para CVV2 no match
+2. Afeta CNP → envolve DE48 (Additional Data) que carrega o resultado do CVV2
+3. Isolado a CNP → problema na forma como o CVV2 está sendo enviado
+
+Passos:
+1. Hex dump de uma transação CNP com N7
+2. Comparar DE48 com spec da bandeira
+   → Visa: CVV2 fica em DE48 subelemento 92 ou campo específico
+   → Mastercard: DE48 subelemento 1E
+3. Verificar se houve deploy recente no sistema de montagem da mensagem
+4. Comparar o DE48 de uma transação que passa (DE39=00) vs uma que falha (N7)
+```
+
+**Causa raiz típica:** Deploy com mudança no mapeamento do DE48 que deslocou o subelemento de CVV2 uma posição. O emissor lê CVV2 em posição errada → no match → N7.
+
+**Correção:** Rollback do deploy ou fix emergencial no parser de DE48. Validar com 5 transações de teste antes de liberar.
+
+---
+
+### Cenário G — Stand-in Aprovando Além do Limite
+
+```
+Sintoma: Transações de R$ 5.000+ estão sendo aprovadas mesmo com o emissor fora
+Política de stand-in define limite máximo de R$ 500
+```
+
+**Diagnóstico:**
+```
+1. Verificar qual componente está executando o stand-in
+2. Verificar configuração do stand-in: arquivo XML ou banco de dados?
+3. Confirmar que a configuração atual foi recarregada após o deploy
+
+Chave de configuração típica (stand-in):
+  standin.max_amount=50000        ← em centavos, R$ 500,00
+  standin.eligible_networks=VISA,MASTERCARD,ELO
+  standin.exclude_mcc=6011,6012   ← ATM/saque nunca em stand-in
+```
+
+**Causa raiz típica:** Configuração de stand-in em cache não foi invalidada após update no banco. Stand-in rodando com valores do cache antigo.
+
+**Correção:** Forçar reload da configuração + audit de todas as transações aprovadas em stand-in acima do limite. Emitir reversals das que estão além da política.
+
+---
+
+### Cenário H — Contactless Caindo para Fallback Chip
+
+```
+Sintoma: 30% das transações contactless estão sendo processadas como chip contact
+Terminal Verifone VX520 em loja específica. Outros terminais OK.
+```
+
+**Diagnóstico:**
+```
+1. Contactless tem "floor limit" configurado no terminal
+   → Acima do floor limit: requer contactless com CVM (PIN ou assinatura)
+   → Abaixo: "tap and go" sem CVM
+2. Se o terminal está caindo para chip, o valor pode estar acima do floor limit
+   E o portador não está fazendo PIN contactless
+3. Verificar DE22 nas transações problemáticas:
+   07 = contactless (EMV)
+   05 = chip contact  ← se está aparecendo aqui, caiu para fallback
+
+Verificar parâmetros do terminal:
+  - CTLS Floor Limit atual vs recomendado pela bandeira
+  - Contactless CVM limit (Brasil: R$ 200,00 tipicamente)
+```
+
+**Causa raiz típica:** Floor limit desatualizado após última parametrização (ex: atualizado para R$ 50 quando deveria ser R$ 200). Acima de R$ 50, terminal exige PIN contactless; se portador remove o cartão antes do PIN, cai para chip.
+
+**Correção:** Reparametrizar terminal com floor limit correto (via TMS — Terminal Management System).
+
+---
+
+### Cenário I — Valor com Arredondamento Incorreto em Multi-Moeda
+
+```
+Sintoma: Reclamações de portadores de cartão em USD sendo cobrados R$ 0,01 a mais
+Transações em EUR funcionando normalmente
+```
+
+**Diagnóstico:**
+```
+DE4  = Transaction Amount (moeda do merchant)
+DE6  = Cardholder Billing Amount (moeda do portador)
+DE49 = Transaction Currency (986=BRL, 840=USD, 978=EUR)
+DE51 = Cardholder Billing Currency
+
+Regra: conversão deve usar a taxa de câmbio da bandeira + rounding definido pela ISO 4217
+USD tem 2 decimal places (exponent=2)
+BRL tem 2 decimal places (exponent=2)
+
+O problema: conversão usando HALF_DOWN ao invés de HALF_UP?
+Ou: taxa de câmbio com precisão insuficiente (4 casas vs 6 necessárias)?
+```
+
+**Código problemático:**
+```java
+// ERRADO: HALF_DOWN pode causar centavo a menos
+BigDecimal converted = amount.multiply(rate)
+                              .setScale(2, RoundingMode.HALF_DOWN);
+
+// CORRETO: HALF_UP é o padrão da indústria para valores monetários
+BigDecimal converted = amount.multiply(rate)
+                              .setScale(2, RoundingMode.HALF_UP);
+```
+
+**Correção:** Corrigir `RoundingMode` para `HALF_UP` em todos os conversores de moeda. Verificar se a taxa de câmbio tem pelo menos 6 casas decimais antes do arredondamento.
+
+---
+
+### Cenário J — Memory Leak no LateResponseDetector
+
+```
+Sintoma: Switch reiniciando automaticamente a cada 48-72h com OutOfMemoryError
+Heap dump mostra ConcurrentHashMap com 2M+ entradas no LateResponseDetector
+```
+
+**Diagnóstico:**
+```
+LateResponseDetector mantém mapa de STANs pendentes:
+  Map<String, Instant> pendingSTANs = new ConcurrentHashMap<>();
+
+Problema: entradas são ADICIONADAS quando a transação sai para o emissor
+e REMOVIDAS quando a resposta chega. Mas e quando há timeout?
+- A transação faz timeout → gera reversal
+- O reversal é enviado → a entrada deveria ser removida
+- Mas se o reversal também não responde... a entrada fica para sempre
+
+Volume de 100k txns/h → 2M entradas em 20h → OOM
+```
+
+**Correção:**
+
+```java
+// Adicionar cleanup periódico com TTL
+@Scheduled(fixedDelay = 60_000) // a cada 1 minuto
+public void cleanupExpiredEntries() {
+    Instant cutoff = Instant.now().minus(2, ChronoUnit.HOURS);
+    int removedCount = 0;
+    Iterator<Map.Entry<String, Instant>> it = pendingSTANs.entrySet().iterator();
+    while (it.hasNext()) {
+        if (it.next().getValue().isBefore(cutoff)) {
+            it.remove();
+            removedCount++;
+        }
+    }
+    if (removedCount > 0) {
+        log.info("LateResponseDetector: {} expired entries removed", removedCount);
+        metrics.counter("late_response.cleanup").increment(removedCount);
+    }
+}
+```
+
+**Prevenção:** Adicionar métrica de tamanho do mapa ao SwitchMetrics:
+```java
+Gauge.builder("late_response.pending_count", pendingSTANs, Map::size)
+     .register(registry);
+```
+Alertar quando passar de 10.000 entradas.
 
 ### Desafio
-Crie um **playbook de incidente** formatado como runbook para o time de operações. Deve cobrir os 10 incidentes mais comuns com: detecção, diagnóstico, resolução, prevenção.
+Crie um **playbook de incidente** formatado como runbook para o time de operações. Deve cobrir os 15 incidentes acima com: detecção (qual alerta dispara), diagnóstico (queries/comandos a executar), resolução (passos), verificação (como confirmar que está resolvido), e prevenção (o que mudar para não acontecer de novo).
 
 ---
 

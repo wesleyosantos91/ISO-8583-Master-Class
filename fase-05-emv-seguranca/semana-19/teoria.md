@@ -674,6 +674,93 @@ Terminal                  Adquirente              HSM              Emissor
    │◄── 0210 [DE39=00] ───────│                    │                  │
 ```
 
+### Lado do Emissor — Verificação do PIN
+
+O emissor (ou seu HSM) recebe DE52 criptografado e precisa verificar se o PIN é correto:
+
+```java
+public class IssuerPINVerifier {
+
+    /**
+     * Verifica o PIN recebido pelo emissor.
+     *
+     * Em produção: NUNCA sai do HSM. Aqui é apenas didático.
+     *
+     * @param encryptedDE52  DE52 criptografado com ZPK-B (8 bytes)
+     * @param zpkB           ZPK do lado do emissor (16 ou 24 bytes)
+     * @param pan            PAN do portador (para reconstruir PAN block)
+     * @param correctPIN     PIN correto armazenado pelo emissor (hash ou cleartext didático)
+     * @return DE39 code: "00" (correto) ou "55" (incorreto)
+     */
+    public String verifyPIN(byte[] encryptedDE52, byte[] zpkB,
+                             String pan, String correctPIN) throws Exception {
+        // Passo 1: Descriptografa com ZPK-B → cleartext PIN block
+        byte[] cleartextPINBlock = decrypt3DES(encryptedDE52, zpkB);
+
+        // Passo 2: Reconstrói PAN block (mesmo algoritmo do terminal)
+        String panStripped = pan.replaceAll("\\D", "");
+        String panDigits   = panStripped.substring(panStripped.length() - 13,
+                                                    panStripped.length() - 1);
+        String panHex = "0000" + panDigits;
+        byte[] panBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            panBlock[i] = (byte) ((hexVal(panHex.charAt(i * 2)) << 4)
+                                 | hexVal(panHex.charAt(i * 2 + 1)));
+
+        // Passo 3: XOR para recuperar PIN block em claro
+        byte[] pinBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            pinBlock[i] = (byte) (cleartextPINBlock[i] ^ panBlock[i]);
+
+        // Passo 4: Extrai PIN dos nibbles
+        // Nibble 0 = '0' (formato), Nibble 1 = comprimento, Nibbles 2..N = dígitos
+        int pinLen = pinBlock[0] & 0x0F;  // segundo nibble do primeiro byte
+        StringBuilder pin = new StringBuilder();
+        for (int i = 0; i < pinLen; i++) {
+            int byteIdx  = (i + 2) / 2;
+            boolean high = ((i + 2) % 2 == 0);
+            int nibble   = high ? (pinBlock[byteIdx] >> 4) & 0x0F
+                                : pinBlock[byteIdx] & 0x0F;
+            pin.append((char)('0' + nibble));
+        }
+
+        // Passo 5: Zera buffers sensíveis
+        java.util.Arrays.fill(cleartextPINBlock, (byte) 0);
+        java.util.Arrays.fill(pinBlock, (byte) 0);
+        java.util.Arrays.fill(panBlock, (byte) 0);
+
+        // Passo 6: Compara com PIN correto
+        // Em produção: compara com PIN offset armazenado (PVV/IBM 3624)
+        return correctPIN.equals(pin.toString()) ? "00" : "55";
+    }
+
+    public static byte[] decrypt3DES(byte[] data, byte[] key) throws Exception {
+        javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(key, "DESede");
+        javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("DESede/ECB/NoPadding");
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secretKey);
+        return cipher.doFinal(data);
+    }
+
+    private static int hexVal(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return 0xF;
+    }
+}
+```
+
+**Nota sobre armazenamento de PIN em produção:**
+
+Emissores reais NUNCA armazenam o PIN em texto claro. Usam um dos métodos:
+
+| Método | Como funciona |
+|--------|--------------|
+| **IBM 3624 PIN offset** | PIN derivado do PAN usando DES; offset = PIN real − PIN natural |
+| **Visa PVV (PIN Verification Value)** | PVV calculado via 3DES(ZPK, PAN+PAN seq+offset) |
+| **PIN Block apenas no HSM** | A comparação ocorre inteiramente dentro do HSM sem nunca expor o PIN |
+
+A abordagem correta de produção é enviar o cleartext PIN block ao HSM do emissor que executa a verificação internamente e retorna apenas "correto/incorreto".
+
 ## 5. PAN Masking — PCI Mindset
 
 ```java

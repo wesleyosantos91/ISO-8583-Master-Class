@@ -419,15 +419,29 @@ public class IssuerSimulator implements ISORequestListener {
     }
     
     private String decide(String pan, long amount, ISOMsg msg) {
-        // Simula regras reais
-        if (pan.startsWith("400000000000")) return "14"; // PAN inválido
-        if (pan.startsWith("410000000000")) return "51"; // Sem saldo
-        if (pan.startsWith("420000000000")) return "54"; // Expirado
-        if (pan.startsWith("430000000000")) return "55"; // PIN errado
-        if (amount > 1000000) return "61";                // Acima do limite
-        if (isBlocked(pan)) return "05";                   // Do not honor
+        // Simula regras reais — 10+ cenários de decline para teste
+        if (pan.startsWith("400000000000")) return "14"; // Invalid card number
+        if (pan.startsWith("410000000000")) return "51"; // Insufficient funds
+        if (pan.startsWith("420000000000")) return "54"; // Expired card
+        if (pan.startsWith("430000000000")) return "55"; // Incorrect PIN
+        if (pan.startsWith("440000000000")) return "57"; // Transaction not permitted to cardholder
+        if (pan.startsWith("450000000000")) return "62"; // Restricted card (lost/stolen)
+        if (pan.startsWith("460000000000")) return "78"; // No account (no account of type requested)
+        if (pan.startsWith("470000000000")) return "91"; // Issuer unavailable (simula emissor fora)
+        if (pan.startsWith("480000000000")) return "92"; // Routing error
+        if (pan.startsWith("490000000000")) return "96"; // System malfunction
+        if (amount > 1000000) return "61";                // Exceeds amount limit (R$ 10.000)
+        if (isBlocked(pan)) return "05";                   // Do not honor (bloqueio genérico)
         return "00"; // Aprovado
     }
+
+    // Referência rápida dos 20 response codes mais comuns:
+    // 00=Approved  05=Do not honor  10=Partial approval  12=Invalid txn
+    // 13=Invalid amount  14=Invalid card  30=Format error  41=Lost card
+    // 43=Stolen card  51=Insufficient funds  54=Expired card  55=Incorrect PIN
+    // 57=Not permitted  61=Exceeds limit  62=Restricted  65=Exceeds freq limit
+    // 75=PIN tries exceeded  78=No account  91=Issuer unavailable  92=Routing error
+    // 94=Duplicate  96=System error  N7=CVV2 failure
 }
 ```
 
@@ -497,7 +511,15 @@ public class BINTable {
     }
     
     public Route lookup(String bin) {
-        // Longest prefix match
+        // Longest-prefix-match via TreeMap.floorEntry():
+        // floorEntry(bin) retorna a entrada com a maior chave ≤ bin.
+        // Ex: table tem ["4532", "45320151", "453201"]
+        //   lookup("45320151XXXXXXXX") → floorEntry retorna "453201511"? Não,
+        //   retorna "45320151" (maior chave ≤ bin) → startsWith confirma match.
+        //
+        // Caso de BIN expansion (6→8 dígitos): se a table tem "453201" (6-digit)
+        // e "45320151" (8-digit), o lookup de "45320151XXXX" casa com "45320151" primeiro.
+        // O RouteByBIN participant tenta 8-digit, depois fallback 6-digit (linhas 466-472).
         Map.Entry<String, Route> entry = routes.floorEntry(bin);
         if (entry != null && bin.startsWith(entry.getKey())) {
             return entry.getValue();
