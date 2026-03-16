@@ -214,18 +214,135 @@ Regras de velocidade que o switch/antifraude deve implementar:
 ```java
 public class VelocityRules {
 
-    // Mesma cartão: máximo 3 tentativas em 10 minutos
-    public boolean checkCardVelocity(String pan, int windowMinutes, int maxAttempts) { ... }
+    // Armazena histórico com TTL implícito via timestamp
+    private final Map<String, Deque<Instant>> cardAttempts    = new ConcurrentHashMap<>();
+    private final Map<String, Set<String>>    deviceCards     = new ConcurrentHashMap<>();
+    private final Map<String, Deque<Instant>> ipTransactions  = new ConcurrentHashMap<>();
+    private final Map<String, Instant>        recentTxns      = new ConcurrentHashMap<>();
 
-    // Mesmo dispositivo: máximo 5 cartões diferentes em 24h
-    public boolean checkDeviceVelocity(String deviceId, int windowHours, int maxCards) { ... }
+    /**
+     * Mesma cartão: máximo N tentativas em windowMinutes.
+     * @return true se dentro do limite (OK para prosseguir), false se excedeu (bloquear)
+     */
+    public boolean checkCardVelocity(String maskedPan, int windowMinutes, int maxAttempts) {
+        Instant cutoff = Instant.now().minus(windowMinutes, ChronoUnit.MINUTES);
+        Deque<Instant> attempts = cardAttempts.computeIfAbsent(maskedPan,
+                                                                k -> new ArrayDeque<>());
+        synchronized (attempts) {
+            // Remove entradas fora da janela
+            while (!attempts.isEmpty() && attempts.peekFirst().isBefore(cutoff)) {
+                attempts.pollFirst();
+            }
+            attempts.addLast(Instant.now());
+            return attempts.size() <= maxAttempts;
+        }
+    }
 
-    // Mesmo IP: máximo 10 transações em 1 hora
-    public boolean checkIpVelocity(String ip, int windowMinutes, int maxTxns) { ... }
+    /**
+     * Mesmo dispositivo: máximo maxCards cartões distintos em windowHours.
+     * Padrão de fraude: testar múltiplos cartões no mesmo terminal/app.
+     */
+    public boolean checkDeviceVelocity(String deviceId, int windowHours, int maxCards) {
+        // Simplificação: mantém conjunto de PANs únicos por dispositivo
+        // Em produção: usar TTL via Redis ZSET (scored set com timestamp)
+        Set<String> cards = deviceCards.computeIfAbsent(deviceId,
+                                                         k -> ConcurrentHashMap.newKeySet());
+        // Para este exemplo, não expiramos as entradas (produção deve usar TTL)
+        return cards.size() < maxCards;
+    }
 
-    // Mesmo merchant + cartão: máximo 1 transação idêntica em 5 minutos
-    public boolean checkDuplicateTransaction(String pan, String merchantId,
-                                              BigDecimal amount, int windowMinutes) { ... }
+    /** Registra um cartão usado por um dispositivo */
+    public void recordDeviceCard(String deviceId, String maskedPan) {
+        deviceCards.computeIfAbsent(deviceId, k -> ConcurrentHashMap.newKeySet())
+                   .add(maskedPan);
+    }
+
+    /**
+     * Mesmo IP: máximo maxTxns transações em windowMinutes.
+     */
+    public boolean checkIpVelocity(String ip, int windowMinutes, int maxTxns) {
+        Instant cutoff = Instant.now().minus(windowMinutes, ChronoUnit.MINUTES);
+        Deque<Instant> txns = ipTransactions.computeIfAbsent(ip,
+                                                              k -> new ArrayDeque<>());
+        synchronized (txns) {
+            while (!txns.isEmpty() && txns.peekFirst().isBefore(cutoff)) {
+                txns.pollFirst();
+            }
+            txns.addLast(Instant.now());
+            return txns.size() <= maxTxns;
+        }
+    }
+
+    /**
+     * Mesmo PAN + merchant + valor: máximo 1 transação em windowMinutes.
+     * Detecta reenvio acidental do terminal ou duplo clique no botão de pagamento.
+     */
+    public boolean checkDuplicateTransaction(String maskedPan, String merchantId,
+                                              BigDecimal amount, int windowMinutes) {
+        String key = maskedPan + "|" + merchantId + "|" + amount.toPlainString();
+        Instant cutoff = Instant.now().minus(windowMinutes, ChronoUnit.MINUTES);
+        Instant prev = recentTxns.get(key);
+
+        if (prev != null && prev.isAfter(cutoff)) {
+            return false; // Duplicata detectada — bloquear
+        }
+        recentTxns.put(key, Instant.now());
+        return true; // OK
+    }
+}
+```
+
+**Exemplo de uso no TransactionParticipant:**
+
+```java
+public class FraudVelocityGuard implements TransactionParticipant {
+
+    private final VelocityRules velocity = new VelocityRules();
+
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        ISOMsg msg = ctx.get("REQUEST");
+
+        String pan        = PANMasker.mask(msg.getString(2));
+        String ip         = ctx.get("CLIENT_IP");      // enriquecido pelo acquirer
+        String deviceId   = ctx.get("DEVICE_ID");      // para CNP / mobile
+        BigDecimal amount = new BigDecimal(msg.getString(4)).movePointLeft(2);
+        String merchantId = msg.getString(42);
+
+        // 1. Velocidade de cartão: máx 5 tentativas em 10 minutos
+        if (!velocity.checkCardVelocity(pan, 10, 5)) {
+            ctx.put("RESPONSE_CODE", "57");
+            ctx.put("FRAUD_REASON", "CARD_VELOCITY_EXCEEDED");
+            return ABORTED;
+        }
+
+        // 2. IP: máx 15 transações em 60 minutos
+        if (ip != null && !velocity.checkIpVelocity(ip, 60, 15)) {
+            ctx.put("RESPONSE_CODE", "57");
+            ctx.put("FRAUD_REASON", "IP_VELOCITY_EXCEEDED");
+            return ABORTED;
+        }
+
+        // 3. Duplicata exata: mesma combinação em 5 minutos
+        if (!velocity.checkDuplicateTransaction(pan, merchantId, amount, 5)) {
+            ctx.put("RESPONSE_CODE", "94"); // Duplicate Transmission
+            ctx.put("FRAUD_REASON", "DUPLICATE_TRANSACTION");
+            return ABORTED;
+        }
+
+        // 4. Registra cartão por dispositivo (para análise assíncrona)
+        if (deviceId != null) {
+            velocity.recordDeviceCard(deviceId, pan);
+            if (!velocity.checkDeviceVelocity(deviceId, 24, 5)) {
+                ctx.put("RESPONSE_CODE", "57");
+                ctx.put("FRAUD_REASON", "DEVICE_CARD_VELOCITY");
+                return ABORTED;
+            }
+        }
+
+        return PREPARED;
+    }
 }
 ```
 

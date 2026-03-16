@@ -295,6 +295,156 @@ public class TLVParser {
 3. **Implemente `DE55Analyzer`** que extrai e explica: tipo de criptograma, ATC, data, CVM usado
 4. **Diferencie chip de fallback:** quando DE22=051 vs DE22=801, o que muda no DE55?
 
+### DE55Analyzer — Implementação completa
+
+```java
+public class DE55Analyzer {
+
+    private final TLVParser parser = new TLVParser();
+
+    /** Resultado da análise do DE55 */
+    public record DE55Analysis(
+        String cryptogramType,   // ARQC, TC, AAC
+        String atc,              // Application Transaction Counter
+        String txnDate,          // Data da transação (tag 9A)
+        String cvmUsed,          // Método de verificação do portador
+        String tvr,              // Terminal Verification Results (hex)
+        String aip,              // Application Interchange Profile (hex)
+        boolean sdaFailed,       // True se SDA/DDA falhou
+        boolean cvmFailed,       // True se CVM falhou
+        boolean isContactless,   // Inferido pelo AIP
+        List<String> warnings    // Avisos de segurança
+    ) {}
+
+    public DE55Analysis analyze(byte[] de55Data, String de22) {
+        Map<String, byte[]> tags = parser.parse(de55Data);
+        List<String> warnings = new ArrayList<>();
+
+        // ── Tipo de criptograma (tag 9F27) ──────────────────────────────────
+        byte[] cryptoInfo = tags.get("9F27");
+        String cryptogramType = "UNKNOWN";
+        if (cryptoInfo != null && cryptoInfo.length > 0) {
+            int ci = cryptoInfo[0] & 0xC0; // bits 7-6
+            cryptogramType = switch (ci) {
+                case 0x00 -> "AAC";   // Authorization rejected — offline declined
+                case 0x40 -> "TC";    // Transaction Certificate — offline approved
+                case 0x80 -> "ARQC";  // Authorization Request Cryptogram — online
+                default   -> "RFU";
+            };
+        }
+        if ("AAC".equals(cryptogramType)) {
+            warnings.add("CHIP_DECLINED_OFFLINE: cartão recusou a transação offline (AAC)");
+        }
+
+        // ── ATC (tag 9F36) ──────────────────────────────────────────────────
+        byte[] atcBytes = tags.get("9F36");
+        String atc = atcBytes != null ? HexUtils.bytesToHex(atcBytes) : "N/A";
+
+        // ── Data da transação (tag 9A) ───────────────────────────────────────
+        byte[] dateBytes = tags.get("9A");
+        String txnDate = dateBytes != null
+            ? BcdUtils.bcdToString(dateBytes, dateBytes.length * 2)
+            : "N/A";
+
+        // ── TVR (tag 95) ─────────────────────────────────────────────────────
+        byte[] tvrBytes = tags.get("95");
+        String tvr = tvrBytes != null ? HexUtils.bytesToHex(tvrBytes) : "N/A";
+        boolean sdaFailed = false;
+        boolean cvmFailed = false;
+        if (tvrBytes != null && tvrBytes.length >= 1) {
+            sdaFailed = (tvrBytes[0] & 0x01) != 0; // byte1 bit1: Offline data auth failed
+            if (tvrBytes.length >= 3) {
+                cvmFailed = (tvrBytes[2] & 0x08) != 0; // byte3 bit4: CVM failed
+            }
+        }
+        if (sdaFailed) warnings.add("OFFLINE_DATA_AUTH_FAILED: risco elevado, possível clone");
+        if (cvmFailed) warnings.add("CVM_FAILED: método de verificação falhou");
+
+        // ── AIP (tag 82) ─────────────────────────────────────────────────────
+        byte[] aipBytes = tags.get("82");
+        String aip = aipBytes != null ? HexUtils.bytesToHex(aipBytes) : "N/A";
+        boolean isContactless = false;
+        if (aipBytes != null && aipBytes.length >= 1) {
+            isContactless = (aipBytes[0] & 0x20) != 0; // bit6: on-device CVM supported
+        }
+        // Também inferir pelo DE22
+        if (de22 != null && (de22.startsWith("07") || de22.startsWith("91"))) {
+            isContactless = true;
+        }
+
+        // ── CVM Results (tag 9F34) ────────────────────────────────────────────
+        byte[] cvmBytes = tags.get("9F34");
+        String cvmUsed = "UNKNOWN";
+        if (cvmBytes != null && cvmBytes.length >= 1) {
+            int method = cvmBytes[0] & 0x3F;
+            cvmUsed = switch (method) {
+                case 0x00 -> "Fail/No CVM";
+                case 0x01 -> "Offline Plaintext PIN";
+                case 0x02 -> "Online Encrypted PIN";
+                case 0x03 -> "Online Encrypted PIN + Signature";
+                case 0x04 -> "Offline Encrypted PIN";
+                case 0x05 -> "Offline Encrypted PIN + Signature";
+                case 0x1E -> "Signature";
+                case 0x1F -> "No CVM required";
+                case 0x3F -> "No CVM performed";
+                default   -> String.format("Unknown(0x%02X)", method);
+            };
+            if (cvmBytes.length >= 3) {
+                int result = cvmBytes[2] & 0xFF;
+                if (result != 0x02) {
+                    warnings.add("CVM_RESULT_NOT_SUCCESSFUL: byte3=" +
+                                 String.format("%02X", result));
+                }
+            }
+        }
+
+        // ── Verificações cruzadas ─────────────────────────────────────────────
+        if ("ARQC".equals(cryptogramType) && "No CVM required".equals(cvmUsed)) {
+            // OK para contactless abaixo do floor limit
+        }
+        if ("TC".equals(cryptogramType)) {
+            warnings.add("OFFLINE_TC: aprovação offline — não há garantia do emissor online");
+        }
+
+        return new DE55Analysis(cryptogramType, atc, txnDate, cvmUsed,
+                                tvr, aip, sdaFailed, cvmFailed,
+                                isContactless, Collections.unmodifiableList(warnings));
+    }
+
+    /** Resumo legível para logs/debugging */
+    public String summarize(DE55Analysis a) {
+        return String.format(
+            "DE55[crypto=%s atc=%s date=%s cvm=%s tvr=%s aip=%s contactless=%b sdaFail=%b cvmFail=%b warnings=%s]",
+            a.cryptogramType(), a.atc(), a.txnDate(), a.cvmUsed(),
+            a.tvr(), a.aip(), a.isContactless(),
+            a.sdaFailed(), a.cvmFailed(), a.warnings()
+        );
+    }
+}
+```
+
+**Uso no participant:**
+
+```java
+// Dentro do prepare() do ValidateEMV participant
+if (msg.hasField(55)) {
+    byte[] de55 = msg.getBytes(55);
+    DE55Analyzer.DE55Analysis emv = analyzer.analyze(de55, msg.getString(22));
+
+    if ("AAC".equals(emv.cryptogramType())) {
+        // Chip recusou offline — não deve autorizar
+        ctx.put("RESPONSE_CODE", "05");
+        return ABORTED;
+    }
+    if (emv.sdaFailed()) {
+        // Risco de clone — acionar regras anti-fraude extras
+        ctx.put("EMV_RISK_FLAG", "SDA_FAILED");
+    }
+    emv.warnings().forEach(w -> log.warn("EMV_WARNING {} STAN={}", w, stan));
+    ctx.put("EMV_ANALYSIS", emv);
+}
+```
+
 ### Desafio
 Receba dois dumps de DE 55 — um de transação chip e um de contactless. Compare tag a tag e documente as diferenças.
 
@@ -315,14 +465,85 @@ HSM (Hardware Security Module)
 
 ## 2. DUKPT (Derived Unique Key Per Transaction)
 
+### 2.1 Hierarquia de Chaves
+
 ```
-BDK (Base Derivation Key) — no HSM do adquirente
-  └── IPEK (Initial PIN Encryption Key) — injetada no terminal
+BDK (Base Derivation Key, 128 bits) — fica NO HSM do adquirente. Nunca sai.
+  └── IPEK (Initial PIN Encryption Key, 128 bits)
+        = 3DES( BDK, KSN_inicial[bits 0..63] XOR C0C0C0C000000000 )
+        injetada no terminal durante key injection ceremony
       └── Para cada transação:
-          KSN (Key Serial Number) = Terminal ID + Contador
-          Session Key = derive(IPEK, KSN)
-          PIN Block criptografado = 3DES(Session Key, PIN Block claro)
+            KSN = Terminal ID (59 bits) + Contador de transação (21 bits)
+            Session Key = Future_Key_Register derivado do IPEK + KSN
+            EncryptedPINBlock = 3DES( Session Key, ClearPINBlock )
 ```
+
+### 2.2 Estrutura do KSN
+
+```
+┌──────────────────────────┬──────────────────────┐
+│  Key Set ID (59 bits)    │  Counter (21 bits)    │
+│  = Terminal ID + BDK ID  │  0 → 2.097.151 máx   │
+└──────────────────────────┴──────────────────────┘
+Total: 80 bits = 10 bytes
+```
+
+O contador incrementa a cada transação. Quando atinge o máximo (2^21 - 1), o terminal precisa ser re-injetado com nova IPEK.
+
+### 2.3 Derivação da Session Key (simplificado)
+
+O algoritmo DUKPT usa um processo de "future key register" baseado em ANSI X9.24-1:
+
+```
+1. Começa com IPEK no "Current Key Register"
+2. Para cada bit '1' do contador (da esquerda para a direita):
+     a. XOR o KSN com a máscara correspondente ao bit
+     b. Current Key = 3DES( Current Key, KSN XOR mask )
+3. Session Key = Current Key XOR derivation constant (00000000000000FF...)
+```
+
+Pseudocódigo didático:
+```
+IPEK = deriveIPEK(BDK, KSN_initial)
+
+function deriveSessionKey(IPEK, KSN):
+    registers = [IPEK]  # array de chaves intermediárias
+    counter = KSN & 0x1FFFFF  # 21 bits menos significativos
+
+    for each bit i (0 to 20, high to low):
+        if bit i of counter == 1:
+            mask = shiftRegisterMask(i)
+            prevKey = registers[-1]
+            newKey = TDES_EDE( prevKey, (KSN XOR mask)[0:8] )
+            registers.append(newKey)
+
+    sessionKey = registers[-1] XOR PIN_ENCRYPTION_VARIANT
+    return sessionKey
+```
+
+**Vantagem:** Mesmo se um atacante capturar e quebrar uma session key, ele não consegue derivar chaves de outras transações — o processo só avança para frente (forward secrecy).
+
+### 2.4 O que o adquirente recebe e como decripta
+
+Junto com DE52 (PIN block criptografado), o terminal envia o **KSN** (geralmente em campo proprietário ou DE 53):
+
+```
+Terminal → Switch:
+  DE 52 = 3DES(SessionKey, PINBlock)        8 bytes
+  KSN   = Terminal ID + Counter             10 bytes (campo proprietário)
+
+Switch → HSM do adquirente:
+  "Decripta DE52 usando BDK com este KSN"
+
+HSM:
+  1. Reconstrói IPEK = deriveIPEK(BDK, KSN)
+  2. Reconstrói SessionKey usando a lógica do counter
+  3. Decripta PIN Block
+  4. Re-criptografa com ZPK da rede destino
+  5. Retorna EncPINBlock' para o switch
+```
+
+O BDK fica **permanentemente no HSM** do adquirente. O switch nunca vê chaves em claro.
 
 **Vantagem:** Se uma chave de sessão vazar, só compromete aquela transação. Não afeta as demais.
 
@@ -339,7 +560,279 @@ Adquirente → Bandeira:  PIN criptografado com ZPK-B
 
 O PIN em claro NUNCA existe fora do HSM.
 
-## 4. PAN Masking — PCI Mindset
+## 4. Como Construir um PIN Block (ISO 9564 Format 0)
+
+O **PIN Block** é a representação criptografável do PIN do portador. O Format 0 (mais usado) é construído em 3 passos:
+
+### Passo 1 — PIN Block (8 bytes)
+
+```
+Nibble 0:   '0'              (identificador de formato)
+Nibble 1:   tamanho do PIN   (ex: '4' para PIN de 4 dígitos)
+Nibbles 2-N: dígitos do PIN  (ex: '1','2','3','4')
+Nibbles N+1 a 15: 'F'       (padding)
+```
+
+Para PIN=`1234`: `04 12 34 FF FF FF FF FF`
+
+### Passo 2 — PAN Block (8 bytes)
+
+```
+Nibbles 0-3:  '0000'         (zeros fixos)
+Nibbles 4-15: 12 dígitos centrais do PAN (excluindo check digit)
+```
+
+Para PAN=`4532015112830366`:
+- Remove check digit → `453201511283036`
+- Pega os 12 dígitos da direita → `532015112830`
+- PAN Block: `00 00 53 20 15 11 28 30`
+
+### Passo 3 — XOR
+
+```
+PIN Block XOR PAN Block = Cleartext PIN Block
+```
+
+```
+04 12 34 FF FF FF FF FF
+XOR
+00 00 53 20 15 11 28 30
+=
+04 12 67 DF EA EE D7 CF
+```
+
+Este resultado é enviado ao HSM para criptografia com 3DES usando a ZPK.
+
+### Implementação Java
+
+```java
+public class PINBlockBuilder {
+
+    /**
+     * Constrói PIN Block Format 0 (ISO 9564-1).
+     * @param pin  PIN do portador (4-12 dígitos)
+     * @param pan  PAN completo (13-19 dígitos)
+     * @return     8 bytes do cleartext PIN block (deve ser criptografado imediatamente)
+     */
+    public static byte[] buildFormat0(String pin, String pan) {
+        if (pin == null || pin.length() < 4 || pin.length() > 12)
+            throw new IllegalArgumentException("PIN deve ter 4-12 dígitos");
+        if (pan == null || pan.length() < 13)
+            throw new IllegalArgumentException("PAN inválido");
+
+        // ── Passo 1: PIN Block ──────────────────────────────────────────
+        // Nibbles: 0 | len | digit... | F...F (16 nibbles = 8 bytes)
+        char[] pinNibbles = new char[16];
+        pinNibbles[0] = '0';
+        pinNibbles[1] = (char) ('0' + pin.length());
+        for (int i = 0; i < pin.length(); i++)
+            pinNibbles[2 + i] = pin.charAt(i);
+        for (int i = 2 + pin.length(); i < 16; i++)
+            pinNibbles[i] = 'F';
+
+        byte[] pinBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            pinBlock[i] = (byte) ((hexVal(pinNibbles[i * 2]) << 4)
+                                 | hexVal(pinNibbles[i * 2 + 1]));
+
+        // ── Passo 2: PAN Block ──────────────────────────────────────────
+        // Remove check digit → pega 12 dígitos mais à direita
+        String panStripped = pan.replaceAll("\\D", "");
+        String panDigits = panStripped.substring(panStripped.length() - 13,
+                                                  panStripped.length() - 1);
+        String panHex = "0000" + panDigits;   // 16 nibbles
+
+        byte[] panBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            panBlock[i] = (byte) ((hexVal(panHex.charAt(i * 2)) << 4)
+                                 | hexVal(panHex.charAt(i * 2 + 1)));
+
+        // ── Passo 3: XOR ────────────────────────────────────────────────
+        byte[] result = new byte[8];
+        for (int i = 0; i < 8; i++)
+            result[i] = (byte) (pinBlock[i] ^ panBlock[i]);
+
+        // Zera buffers intermediários (boa prática de segurança)
+        java.util.Arrays.fill(pinBlock, (byte) 0);
+        java.util.Arrays.fill(panBlock, (byte) 0);
+        java.util.Arrays.fill(pinNibbles, '\0');
+
+        return result;
+    }
+
+    // ── Criptografia com 3DES (via HSM ou JCE) ─────────────────────────
+    /**
+     * Simula criptografia 3DES para fins didáticos.
+     * Em produção SEMPRE usar HSM — nunca chave em memória.
+     */
+    public static byte[] encrypt3DES(byte[] pinBlock, byte[] zpk) throws Exception {
+        javax.crypto.SecretKey key = new javax.crypto.spec.SecretKeySpec(zpk, "DESede");
+        javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("DESede/ECB/NoPadding");
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key);
+        return cipher.doFinal(pinBlock);
+    }
+
+    private static int hexVal(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return 0xF;  // trata 'F' de padding
+    }
+
+    // ── Utilidade: bytes → hex string ──────────────────────────────────
+    public static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes)
+            sb.append(String.format("%02X", b & 0xFF));
+        return sb.toString();
+    }
+}
+```
+
+### Testes
+
+```java
+class PINBlockBuilderTest {
+
+    @Test
+    void testBuildFormat0_knownVector() {
+        // Vetor de teste amplamente documentado
+        byte[] result = PINBlockBuilder.buildFormat0("1234", "4532015112830366");
+        String hex = PINBlockBuilder.toHex(result);
+        assertEquals("041267DFEAEED7CF", hex);
+    }
+
+    @Test
+    void testBuildFormat0_sixDigitPIN() {
+        byte[] result = PINBlockBuilder.buildFormat0("123456", "4532015112830366");
+        String hex = PINBlockBuilder.toHex(result);
+        // Nibbles PIN: 0 6 1 2 3 4 5 6 F F F F F F F F
+        // = 06 12 34 56 FF FF FF FF
+        // XOR PAN Block 00 00 53 20 15 11 28 30
+        // = 06 12 67 76 EA EE D7 CF
+        assertEquals("061267 76EAEED7CF".replace(" ", ""), hex);
+    }
+
+    @Test
+    void testPINTooShort() {
+        assertThrows(IllegalArgumentException.class,
+            () -> PINBlockBuilder.buildFormat0("123", "4532015112830366"));
+    }
+
+    @Test
+    void testInvalidPAN() {
+        assertThrows(IllegalArgumentException.class,
+            () -> PINBlockBuilder.buildFormat0("1234", "123"));
+    }
+}
+```
+
+### Fluxo Completo Terminal → Emissor
+
+```
+Terminal                  Adquirente              HSM              Emissor
+   │                          │                    │                  │
+   │  PIN digitado             │                    │                  │
+   │  PINBlock = Format0(PIN,PAN)                   │                  │
+   │  EncPINBlock = DUKPT_enc(PINBlock)             │                  │
+   │─── 0200 [DE52=EncPINBlock, KSN] ──►            │                  │
+   │                          │── TranslatePIN ────►│                  │
+   │                          │   (ZPK-A → ZPK-B)  │                  │
+   │                          │◄── EncPINBlock' ────│                  │
+   │                          │─────── 0100 [DE52=EncPINBlock'] ──────►│
+   │                          │                    │  verifica PIN     │
+   │                          │◄────────────────── 0110 [DE39=00] ─────│
+   │◄── 0210 [DE39=00] ───────│                    │                  │
+```
+
+### Lado do Emissor — Verificação do PIN
+
+O emissor (ou seu HSM) recebe DE52 criptografado e precisa verificar se o PIN é correto:
+
+```java
+public class IssuerPINVerifier {
+
+    /**
+     * Verifica o PIN recebido pelo emissor.
+     *
+     * Em produção: NUNCA sai do HSM. Aqui é apenas didático.
+     *
+     * @param encryptedDE52  DE52 criptografado com ZPK-B (8 bytes)
+     * @param zpkB           ZPK do lado do emissor (16 ou 24 bytes)
+     * @param pan            PAN do portador (para reconstruir PAN block)
+     * @param correctPIN     PIN correto armazenado pelo emissor (hash ou cleartext didático)
+     * @return DE39 code: "00" (correto) ou "55" (incorreto)
+     */
+    public String verifyPIN(byte[] encryptedDE52, byte[] zpkB,
+                             String pan, String correctPIN) throws Exception {
+        // Passo 1: Descriptografa com ZPK-B → cleartext PIN block
+        byte[] cleartextPINBlock = decrypt3DES(encryptedDE52, zpkB);
+
+        // Passo 2: Reconstrói PAN block (mesmo algoritmo do terminal)
+        String panStripped = pan.replaceAll("\\D", "");
+        String panDigits   = panStripped.substring(panStripped.length() - 13,
+                                                    panStripped.length() - 1);
+        String panHex = "0000" + panDigits;
+        byte[] panBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            panBlock[i] = (byte) ((hexVal(panHex.charAt(i * 2)) << 4)
+                                 | hexVal(panHex.charAt(i * 2 + 1)));
+
+        // Passo 3: XOR para recuperar PIN block em claro
+        byte[] pinBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            pinBlock[i] = (byte) (cleartextPINBlock[i] ^ panBlock[i]);
+
+        // Passo 4: Extrai PIN dos nibbles
+        // Nibble 0 = '0' (formato), Nibble 1 = comprimento, Nibbles 2..N = dígitos
+        int pinLen = pinBlock[0] & 0x0F;  // segundo nibble do primeiro byte
+        StringBuilder pin = new StringBuilder();
+        for (int i = 0; i < pinLen; i++) {
+            int byteIdx  = (i + 2) / 2;
+            boolean high = ((i + 2) % 2 == 0);
+            int nibble   = high ? (pinBlock[byteIdx] >> 4) & 0x0F
+                                : pinBlock[byteIdx] & 0x0F;
+            pin.append((char)('0' + nibble));
+        }
+
+        // Passo 5: Zera buffers sensíveis
+        java.util.Arrays.fill(cleartextPINBlock, (byte) 0);
+        java.util.Arrays.fill(pinBlock, (byte) 0);
+        java.util.Arrays.fill(panBlock, (byte) 0);
+
+        // Passo 6: Compara com PIN correto
+        // Em produção: compara com PIN offset armazenado (PVV/IBM 3624)
+        return correctPIN.equals(pin.toString()) ? "00" : "55";
+    }
+
+    public static byte[] decrypt3DES(byte[] data, byte[] key) throws Exception {
+        javax.crypto.SecretKey secretKey = new javax.crypto.spec.SecretKeySpec(key, "DESede");
+        javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("DESede/ECB/NoPadding");
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secretKey);
+        return cipher.doFinal(data);
+    }
+
+    private static int hexVal(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return 0xF;
+    }
+}
+```
+
+**Nota sobre armazenamento de PIN em produção:**
+
+Emissores reais NUNCA armazenam o PIN em texto claro. Usam um dos métodos:
+
+| Método | Como funciona |
+|--------|--------------|
+| **IBM 3624 PIN offset** | PIN derivado do PAN usando DES; offset = PIN real − PIN natural |
+| **Visa PVV (PIN Verification Value)** | PVV calculado via 3DES(ZPK, PAN+PAN seq+offset) |
+| **PIN Block apenas no HSM** | A comparação ocorre inteiramente dentro do HSM sem nunca expor o PIN |
+
+A abordagem correta de produção é enviar o cleartext PIN block ao HSM do emissor que executa a verificação internamente e retorna apenas "correto/incorreto".
+
+## 5. PAN Masking — PCI Mindset
 
 ```java
 public class PANMasker {

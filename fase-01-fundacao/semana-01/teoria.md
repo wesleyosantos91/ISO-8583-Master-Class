@@ -611,44 +611,4 @@ Após esta semana, você deve ter clareza absoluta sobre:
 8. **PIX vs cartão** — coexistência e diferenças técnicas
 9. **Por que decisões técnicas impactam receita**
 
----
-
-## Exercícios Semana 1
-
-1. **Mapeie os atores em um caso real:**
-   Escolha uma transação que você fez recentemente com cartão (ou invente um cenário realista: compra de R$ 250 com cartão Nubank na Cielo de uma livraria). Identifique:
-   - Quem é o portador, merchant, adquirente, emissor e bandeira
-   - É on-us ou off-us? Por quê?
-   - É single message ou dual message?
-   - Quantas mensagens ISO 8583 são trocadas?
-
-2. **Trace a jornada financeira do dinheiro:**
-   Para uma compra de R$ 1.000,00 parcelada em 3x no crédito (MDR 3%, interchange 1.5%, assessment 0.2%), calcule:
-   - Quanto o merchant recebe por mês durante os 3 meses?
-   - Quanto o emissor recebe de interchange por parcela?
-   - Quanto o adquirente fica com cada parcela?
-   - Quanto a bandeira recebe no total?
-
-3. **State machine — identifique o estado:**
-   Para cada evento abaixo, informe o estado final da transação:
-   - 0100 enviado → 0110 com DE39=00 recebido → lote de clearing não enviado no D+1
-   - 0200 enviado → 0210 com DE39=00 → clearing D+1 → portador contesta D+45
-   - 0100 enviado → sem resposta em 30s → switch envia 0400 → 0400 é confirmado
-   - 0100 enviado → 0110 com DE39=05 (não honrar)
-
-4. **Modele o roteamento por BIN:**
-   Dado um switch operado pelo Itaú (emissor Itaú, adquirente Rede):
-   - Cartão Itaú Visa na maquininha Rede → on-us ou off-us?
-   - Cartão Bradesco Mastercard na maquininha Rede → on-us ou off-us?
-   - Cartão Hipercard na maquininha Rede → on-us ou off-us? (pesquise quem detém a Hipercard)
-   - Escreva em pseudocódigo a lógica de decisão do `RouteByBIN`
-
-### Desafio — Simulação do ecossistema em papel
-
-Monte um diagrama completo (pode ser ASCII ou Mermaid) de uma transação **parcelada em 3x** desde o swipe do cartão até o terceiro pagamento do merchant, passando por:
-- As mensagens ISO 8583 trocadas no momento da compra
-- Os arquivos de clearing dos 3 meses
-- Os 3 settlements
-- Os fluxos financeiros (quem paga quem, com quais taxas)
-
-Documente: por que o adquirente tem risco financeiro entre o pagamento ao merchant (D+30) e o recebimento do emissor (via settlement)?
+Estes 9 conceitos formam a base de tudo que vem a seguir. Sem eles, código correto ainda produz sistemas incorretos. Na Semana 2, você desce ao nível de bytes e entende a anatomia exata de uma mensagem ISO 8583.

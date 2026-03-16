@@ -359,55 +359,256 @@ Logs de transação devem ser imutáveis (append-only) e retidos pelo prazo regu
 
 ## Exercícios Semana 29
 
-1. **Classifique os cenários:**
-   Para cada situação abaixo, indique se é reversal, void, refund ou chargeback, e quem inicia:
-   - Cliente compra R$ 500 com cartão, switch não recebe resposta do emissor em 30s
-   - Lojista erra o valor e cobra R$ 5.000 em vez de R$ 500, percebe na hora e cancela
-   - Portador recebe o produto errado e liga para o banco 15 dias depois
-   - Adquirente percebe que processou a mesma transação duas vezes no clearing
-   - Portador cancela assinatura de streaming, mas no mês seguinte é cobrado novamente
+### Exercício 1 — Classificação de Reason Codes
 
-2. **Reason code correto:**
-   Indique o reason code Visa mais adequado para cada situação:
-   - Portador afirma não ter feito a compra online (sem 3DS)
-   - Terminal sem chip processou cartão com chip que foi clonado
-   - Loja cobrou R$ 350 mas a autorização foi de R$ 300
-   - Clearing do merchant chegou 12 dias após a autorização
-   - Portador cancelou assinatura, merchant cobrou mesmo assim
-   - Portador diz que o produto chegou completamente diferente do anunciado
+Para cada cenário abaixo, indique o reason code Visa mais adequado e justifique:
 
-3. **Calcule o chargeback ratio:**
-   Um merchant processou em março:
-   - 8.000 transações aprovadas
-   - 42 chargebacks recebidos (dos quais 15 foram de transações de fevereiro)
+a) Portador fez compra online, produto nunca chegou, tentou resolver com merchant sem sucesso
+b) Cartão de crédito do portador foi clonado, compra feita em e-commerce sem 3DS
+c) Terminal processou a mesma compra duas vezes (duplicata técnica)
+d) Portador cancelou assinatura mensal em dezembro, foi cobrado em janeiro
+e) Compra com chip e PIN, portador nega que realizou
 
-   Qual é o chargeback ratio? O merchant está no VDMP? Em qual nível (Early Warning, Standard, Excessive)?
+### Exercício 2 — Implementar ChargebackClassifier
 
-   Dica: o denominador é o total de transações do **mês de referência** (não o mês dos chargebacks).
+O input agrupa os dados relevantes para classificação:
 
-4. **Rastreabilidade com RRN:**
-   Analise o cenário:
-   - Auth 0100 processada com STAN=001234, RRN=202403140001, DE39=00
-   - Clearing enviado no D+1: RRN=202403140001, valor R$ 350
-   - Chargeback recebido (reason code 12.5): valor contestado R$ 500
+```java
+public record ChargebackInput(
+    String channel,          // "CP" (card-present) ou "CNP" (e-commerce)
+    String eci,              // ECI do 3DS: "05", "06", "07", null
+    boolean emvPresent,      // DE55 estava presente na transação original
+    boolean pinVerified,     // DE52 presente e validado com sucesso
+    String disputeReason,    // Motivo informado pelo portador (texto livre)
+    BigDecimal amount,
+    String merchantCategory  // MCC
+) {}
+```
 
-   Quais perguntas você precisa responder para defender essa transação? Que dados o switch precisa ter guardado? A defesa é viável — por quê?
+```java
+public class ChargebackClassifier {
 
-5. **Partial chargeback — impacto técnico:**
-   Um switch simples armazena `amount` como `long` (centavos). Um chargeback de R$ 200 chega referente a uma autorização de R$ 500.
-   - O que o switch precisa verificar para aceitar o partial chargeback?
-   - O que acontece com o restante (R$ 300) — continua liquidado?
-   - Implemente o método `validatePartialChargebackAmount(long originalAmount, long chargebackAmount)` com as validações necessárias.
+    public record ClassificationResult(
+        String reasonCode,
+        String reasonDescription,
+        DefenseDifficulty difficulty,
+        List<String> requiredDocuments,
+        String recommendation       // "REPRESENT" ou "ACCEPT"
+    ) {}
 
-### Desafio — Análise de incidente
+    public enum DefenseDifficulty { EASY, MEDIUM, HARD, IMPOSSIBLE }
 
-Você recebe um alerta: um merchant de e-commerce aumentou seu chargeback ratio de 0.3% para 2.1% em 30 dias. São 180 chargebacks recebidos, dos quais:
-- 140 com reason code 10.4 (CNP fraud)
-- 25 com reason code 13.1 (não recebido)
-- 15 com reason code 12.6 (duplicata)
+    public ClassificationResult classify(ChargebackInput input) {
+        // Fraud CNP — o mais comum e o mais difícil de defender sem 3DS
+        if ("CNP".equals(input.channel())) {
+            if ("05".equals(input.eci()) || "02".equals(input.eci())) {
+                // 3DS autenticado → emissor tem liability → fácil de ganhar
+                return new ClassificationResult("10.4",
+                    "CNP Fraud — 3DS Authenticated",
+                    DefenseDifficulty.EASY,
+                    List.of("3DS authentication data", "ECI value", "CAVV/AAV"),
+                    "REPRESENT");
+            }
+            if ("06".equals(input.eci()) || "01".equals(input.eci())) {
+                // 3DS attempted — alguma proteção
+                return new ClassificationResult("10.4",
+                    "CNP Fraud — 3DS Attempted",
+                    DefenseDifficulty.MEDIUM,
+                    List.of("3DS attempt evidence", "device fingerprint", "order details"),
+                    "REPRESENT");
+            }
+            // Sem 3DS: quase impossível defender fraude CNP
+            return new ClassificationResult("10.4",
+                "CNP Fraud — No 3DS",
+                DefenseDifficulty.IMPOSSIBLE,
+                List.of(),
+                "ACCEPT");
+        }
 
-1. O merchant está em qual programa de monitoramento da Visa? Quais são as consequências imediatas?
-2. Para os 140 CBs de fraude CNP: sem dados de 3DS, qual é a taxa realista de ganho no representment?
-3. Para os 15 de duplicata: o que o switch deveria ter impedido? Qual mecanismo técnico faltou?
-4. Que ação imediata você recomenda para o adquirente em relação a esse merchant?
-5. Como o switch deveria ter gerado um alerta antes de chegar em 2.1%?
+        // Card-present: EMV/chip é a principal defesa
+        if ("CP".equals(input.channel())) {
+            if (input.emvPresent() && input.pinVerified()) {
+                // Chip + PIN: muito forte, quase impossível perder
+                return new ClassificationResult("10.2",
+                    "Counterfeit Fraud — Chip + PIN",
+                    DefenseDifficulty.EASY,
+                    List.of("DE55 EMV data", "PIN verification result", "terminal logs"),
+                    "REPRESENT");
+            }
+            if (input.emvPresent()) {
+                // Chip sem PIN (contactless ou assinatura)
+                return new ClassificationResult("10.2",
+                    "Counterfeit Fraud — Chip no PIN",
+                    DefenseDifficulty.MEDIUM,
+                    List.of("DE55 EMV data", "CVM results from DE55 tag 9F34"),
+                    "REPRESENT");
+            }
+            // Trato magnético: fraco
+            return new ClassificationResult("10.2",
+                "Counterfeit Fraud — Magnetic Stripe",
+                DefenseDifficulty.HARD,
+                List.of("POS terminal receipt", "video evidence if available"),
+                "ACCEPT");
+        }
+
+        // Fallback genérico
+        return new ClassificationResult("13.9",
+            "Other — Manual Review Required",
+            DefenseDifficulty.MEDIUM,
+            List.of("All available transaction evidence"),
+            "MANUAL_REVIEW");
+    }
+}
+```
+
+### Exercício 3 — Chargeback Ratio Monitor
+
+```java
+/**
+ * Chargeback Ratio = (Nº chargebacks do mês) / (Nº transações do mês anterior)
+ * Alerta Visa VDMP:       ratio > 0.0065 (0.65%) com volume >= 100 CBs
+ * Alerta Mastercard ECP:  ratio > 0.015  (1.5%)  com volume >= 100 CBs
+ */
+public class ChargebackRatioMonitor {
+
+    private static final double VISA_ALERT_RATIO   = 0.0065;
+    private static final double MASTER_ALERT_RATIO = 0.015;
+    private static final int    MIN_CB_VOLUME      = 100;
+
+    public record MerchantRatio(
+        String merchantId,
+        String merchantName,
+        int chargebackCount,
+        int transactionCount,
+        double ratio,
+        boolean visaAlert,
+        boolean mastercardAlert
+    ) {}
+
+    public List<MerchantRatio> calculateRatios(
+            List<Transaction> transactions,
+            List<Chargeback> chargebacks,
+            YearMonth month) {
+
+        YearMonth prevMonth = month.minusMonths(1);
+
+        // Agrupa transações aprovadas do MÊS ANTERIOR por merchant
+        Map<String, Long> txnsByMerchant = transactions.stream()
+            .filter(t -> YearMonth.from(t.txnDateTime()).equals(prevMonth))
+            .filter(t -> "00".equals(t.responseCode()))
+            .collect(Collectors.groupingBy(Transaction::merchantId, Collectors.counting()));
+
+        // Agrupa chargebacks do MÊS ATUAL por merchant
+        Map<String, List<Chargeback>> cbsByMerchant = chargebacks.stream()
+            .filter(cb -> YearMonth.from(cb.receivedDate()).equals(month))
+            .collect(Collectors.groupingBy(Chargeback::merchantId));
+
+        // Calcula ratio para cada merchant com chargeback
+        return cbsByMerchant.entrySet().stream().map(entry -> {
+            String merchantId = entry.getKey();
+            int cbCount       = entry.getValue().size();
+            long txnCount     = txnsByMerchant.getOrDefault(merchantId, 1L); // evita div/0
+            double ratio      = (double) cbCount / txnCount;
+            String name       = entry.getValue().get(0).merchantName();
+
+            return new MerchantRatio(
+                merchantId, name, cbCount, (int) txnCount, ratio,
+                cbCount >= MIN_CB_VOLUME && ratio > VISA_ALERT_RATIO,
+                cbCount >= MIN_CB_VOLUME && ratio > MASTER_ALERT_RATIO
+            );
+        })
+        .sorted(Comparator.comparingDouble(MerchantRatio::ratio).reversed())
+        .collect(Collectors.toList());
+    }
+}
+```
+
+### Exercício 4 — Retrieval Request Handler (MTI 1644)
+
+Antes de um chargeback, o emissor pode enviar um **Retrieval Request** pedindo documentos da transação original. O switch precisa responder com MTI 1646:
+
+```java
+public class RetrievalRequestHandler implements TransactionParticipant {
+
+    private final TransactionRepository repository;
+
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx    = (Context) context;
+        ISOMsg request = ctx.get("REQUEST");
+
+        try {
+            // 1. Só processa MTI 1644
+            if (!"1644".equals(request.getMTI())) return PREPARED;
+
+            String rrn      = request.getString(37); // RRN da transação original
+            String authCode = request.getString(38); // Auth code da transação original
+
+            // 2. Busca transação no repositório
+            TransactionRecord txn = repository.findByRrnAndAuthCode(rrn, authCode);
+
+            ISOMsg response = (ISOMsg) request.clone();
+            response.setMTI("1646");
+
+            if (txn == null) {
+                // 3a. Não encontrado: DE39=25 (Unable to locate record on file)
+                response.set(39, "25");
+            } else {
+                // 3b. Encontrado: retorna dados originais
+                response.set(39, "00");
+                response.set(2,  txn.maskedPan());
+                response.set(3,  txn.processingCode());
+                response.set(4,  String.format("%012d",
+                                  txn.amount().movePointRight(2).longValue()));
+                response.set(12, txn.txnDateTime().format(
+                                  java.time.format.DateTimeFormatter.ofPattern("HHmmss")));
+                response.set(13, txn.txnDateTime().format(
+                                  java.time.format.DateTimeFormatter.ofPattern("MMdd")));
+                response.set(38, txn.authorizationCode());
+                response.set(41, txn.terminalId());
+                response.set(42, txn.merchantId());
+                response.set(43, txn.merchantName());
+            }
+
+            ctx.put("RESPONSE", response);
+            return PREPARED;
+
+        } catch (ISOException e) {
+            ctx.put("RESPONSE_CODE", "96");
+            return ABORTED;
+        }
+    }
+}
+
+### Exercício 5 — Análise de Caso Real
+
+Analise este cenário e responda as perguntas:
+
+**Dados:**
+- Transação: R$ 2.400 em e-commerce, crédito, DE22=812 (CNP), sem DE55 (sem EMV)
+- 3DS: não utilizado (ECI ausente)
+- DE43: "LOJA XYZ LTDA SAO PAULO BR"
+- Portador contesta: "não reconheço essa compra" (reason code 10.4 — CNP Fraud)
+- Data da compra: 15/01. Data do chargeback: 03/04 (dentro de 90 dias).
+
+**Perguntas:**
+
+1. O adquirente tem alguma chance de ganhar o representment? Por quê?
+2. Se o merchant tivesse usado 3DS (ECI=05), o resultado seria diferente?
+3. Qual seria o custo total para o merchant se aceitar o chargeback? (Assuma MDR de 3%)
+4. Que mudanças técnicas o merchant deveria implementar para prevenir futuros casos?
+5. Como o switch deveria ter registrado esta transação para facilitar a defesa?
+
+### Desafio — Dispute Automation Engine
+
+Implemente uma versão completa do `DisputeAutomationEngine` (esboçado na Semana 30) que:
+
+1. Busca a transação original pelo RRN do chargeback
+2. Calcula se vale defender (valor mínimo configurável)
+3. Classifica por reason code usando `ChargebackClassifier`
+4. Para reason code 10.4: verifica se tem 3DS (ECI 05/02) → representa automaticamente
+5. Para reason code 12.6: busca transação duplicada no repositório → prova que são distintas
+6. Para outros: encaminha para fila de revisão manual com prioridade baseada no valor
+7. Gera relatório diário com: CBs recebidos, CBs aceitos automaticamente, CBs representados, win rate
+
+Adicione testes unitários para cada cenário.

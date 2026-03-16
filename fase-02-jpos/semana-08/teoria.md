@@ -130,10 +130,182 @@ O packager define como cada campo é serializado/desserializado:
               class="org.jpos.iso.IFA_LLNUM"/>
     <isofield id="3"  length="6"   name="Processing Code"
               class="org.jpos.iso.IFA_NUMERIC"/>
-    <isofield id="4"  length="12"  name="Amount"
+    <isofield id="4"  length="12"  name="Amount, Transaction"
               class="org.jpos.iso.IFA_NUMERIC"/>
-    <!-- ... demais campos ... -->
+    <isofield id="5"  length="12"  name="Amount, Settlement"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="6"  length="12"  name="Amount, Cardholder Billing"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="7"  length="10"  name="Transmission Date and Time"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="11" length="6"   name="System Trace Audit Number"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="12" length="6"   name="Local Transaction Time"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="13" length="4"   name="Local Transaction Date"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="14" length="4"   name="Expiration Date"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="15" length="4"   name="Settlement Date"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="18" length="4"   name="Merchant Type (MCC)"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="22" length="3"   name="POS Entry Mode"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="25" length="2"   name="POS Condition Code"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="26" length="2"   name="POS PIN Capture Code"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="32" length="11"  name="Acquiring Institution ID"
+              class="org.jpos.iso.IFA_LLNUM"/>
+    <isofield id="35" length="37"  name="Track 2 Data"
+              class="org.jpos.iso.IFA_LLNUM"/>
+    <isofield id="37" length="12"  name="Retrieval Reference Number"
+              class="org.jpos.iso.IFA_ALPHA"/>
+    <isofield id="38" length="6"   name="Authorization ID Response"
+              class="org.jpos.iso.IFA_ALPHA"/>
+    <isofield id="39" length="2"   name="Response Code"
+              class="org.jpos.iso.IFA_ALPHA"/>
+    <isofield id="41" length="8"   name="Card Acceptor Terminal ID"
+              class="org.jpos.iso.IFA_ALPHA"/>
+    <isofield id="42" length="15"  name="Card Acceptor ID Code"
+              class="org.jpos.iso.IFA_ALPHA"/>
+    <isofield id="43" length="40"  name="Card Acceptor Name/Location"
+              class="org.jpos.iso.IFA_ALPHA"/>
+    <isofield id="48" length="999" name="Additional Data — Private"
+              class="org.jpos.iso.IFA_LLLCHAR"/>
+    <isofield id="49" length="3"   name="Currency Code, Transaction"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="50" length="3"   name="Currency Code, Settlement"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="52" length="8"   name="PIN Data"
+              class="org.jpos.iso.IFB_BINARY"/>
+    <isofield id="54" length="120" name="Additional Amounts"
+              class="org.jpos.iso.IFA_LLLCHAR"/>
+    <isofield id="55" length="255" name="ICC System Related Data"
+              class="org.jpos.iso.IFA_LLLBINARY"/>
+    <isofield id="60" length="999" name="Reserved Private 1"
+              class="org.jpos.iso.IFA_LLLCHAR"/>
+    <isofield id="61" length="999" name="Reserved Private 2"
+              class="org.jpos.iso.IFA_LLLCHAR"/>
+    <isofield id="62" length="999" name="Reserved Private 3"
+              class="org.jpos.iso.IFA_LLLCHAR"/>
+    <isofield id="63" length="999" name="Reserved Private 4"
+              class="org.jpos.iso.IFA_LLLCHAR"/>
+    <isofield id="70" length="3"   name="Network Management Info Code"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="90" length="42"  name="Original Data Elements"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="95" length="42"  name="Replacement Amounts"
+              class="org.jpos.iso.IFA_NUMERIC"/>
+    <isofield id="102" length="28" name="Account ID 1"
+              class="org.jpos.iso.IFA_LLCHAR"/>
+    <isofield id="103" length="28" name="Account ID 2"
+              class="org.jpos.iso.IFA_LLCHAR"/>
 </isopackager>
+
+> **Observação sobre bitmaps:** O `IFA_BITMAP` gera bitmap em hex ASCII (16 chars = 8 bytes).
+> Se a spec da contraparte usa bitmap binário, troque por `IFB_BITMAP`.
+> Bitmap secundário (DE 65-128) é habilitado automaticamente quando um campo > 64 está presente.
+
+## 2.1 MessageFactory — criando mensagens tipadas
+
+```java
+public class MessageFactory {
+
+    private final ISOPackager packager;
+
+    public MessageFactory(ISOPackager packager) {
+        this.packager = packager;
+    }
+
+    /** Monta uma 0200 Authorization Request */
+    public ISOMsg buildAuthRequest(String pan, long amountCents, String terminalId,
+                                   String merchantId, String processingCode,
+                                   String currencyCode) throws ISOException {
+        ISOMsg msg = new ISOMsg();
+        msg.setPackager(packager);
+        msg.setMTI("0200");
+        msg.set(2,  pan);
+        msg.set(3,  processingCode);                                    // ex: "003000"
+        msg.set(4,  String.format("%012d", amountCents));               // centavos
+        msg.set(7,  LocalDateTime.now().format(
+                        DateTimeFormatter.ofPattern("MMddHHmmss")));     // DE7
+        msg.set(11, String.format("%06d", stanCounter.incrementAndGet() % 1_000_000));
+        msg.set(22, "051");                                             // chip contact
+        msg.set(25, "00");                                              // normal
+        msg.set(37, generateRRN());
+        msg.set(41, terminalId);
+        msg.set(42, String.format("%-15s", merchantId));               // pad 15
+        msg.set(49, currencyCode);                                      // ex: "986"
+        return msg;
+    }
+
+    /** Monta a 0210 Authorization Response a partir da request */
+    public ISOMsg buildAuthResponse(ISOMsg request, String responseCode,
+                                    String authCode) throws ISOException {
+        ISOMsg response = (ISOMsg) request.clone();
+        response.setResponseMTI();                                      // 0200 → 0210
+        response.set(39, responseCode);
+        if ("00".equals(responseCode) && authCode != null) {
+            response.set(38, authCode);
+        }
+        return response;
+    }
+
+    /** Monta 0800 Echo/Sign-on */
+    public ISOMsg buildEchoRequest(String networkCode) throws ISOException {
+        ISOMsg msg = new ISOMsg();
+        msg.setPackager(packager);
+        msg.setMTI("0800");
+        msg.set(7,  LocalDateTime.now().format(
+                        DateTimeFormatter.ofPattern("MMddHHmmss")));
+        msg.set(11, String.format("%06d", stanCounter.incrementAndGet() % 1_000_000));
+        msg.set(70, networkCode);  // "301" = echo, "001" = sign-on
+        return msg;
+    }
+
+    /** Monta 0400 Reversal Request a partir da autorização original */
+    public ISOMsg buildReversalRequest(ISOMsg originalAuth) throws ISOException {
+        ISOMsg reversal = new ISOMsg();
+        reversal.setPackager(packager);
+        reversal.setMTI("0400");
+
+        // Campos copiados da original
+        for (int de : new int[]{2, 3, 4, 12, 13, 22, 25, 32, 41, 42, 49}) {
+            if (originalAuth.hasField(de)) {
+                reversal.set(de, originalAuth.getString(de));
+            }
+        }
+
+        // Novos campos para o reversal
+        reversal.set(7,  LocalDateTime.now().format(
+                             DateTimeFormatter.ofPattern("MMddHHmmss")));
+        reversal.set(11, String.format("%06d",
+                             stanCounter.incrementAndGet() % 1_000_000));
+
+        // DE 90 — Original Data Elements: MTI(4)+STAN(6)+DateTime(10)+AcqID(11)+FwdID(11)
+        String originalAcqId = originalAuth.hasField(32)
+            ? String.format("%011s", originalAuth.getString(32)).replace(' ', '0')
+            : "00000000000";
+        String de90 = originalAuth.getMTI()
+            + originalAuth.getString(11)
+            + originalAuth.getString(7)
+            + originalAcqId
+            + "00000000000";  // Forward Institution ID (se não aplicável)
+        reversal.set(90, de90);
+
+        return reversal;
+    }
+
+    private String generateRRN() {
+        return String.format("%012d", rrn.incrementAndGet() % 1_000_000_000_000L);
+    }
+
+    private final AtomicLong stanCounter = new AtomicLong(0);
+    private final AtomicLong rrn = new AtomicLong(0);
+}
+```
 ```
 
 **Classes de campo comuns:**
@@ -720,6 +892,147 @@ O que fazer com a 0110 tardia?
 2. **Logar e alertar** — mínimo aceitável
 3. **Reverter se aprovada** — enviar 0400 para desfazer a aprovação tardia
 4. **Reconciliar depois** — marcar como exceção para tratamento manual
+
+## 2. Java: Usando QMUX para enviar e aguardar resposta
+
+```java
+// Obtendo o QMUX registrado no Q2
+QMUX mux = (QMUX) NameRegistrar.get("visa-mux");
+
+// Enviando e aguardando
+ISOMsg response = mux.request(requestMsg, 30_000); // timeout em ms
+
+if (response == null) {
+    // TIMEOUT — QMUX não recebeu resposta a tempo
+    // Ação obrigatória: reversal + DE39=68 para o cliente
+}
+```
+
+## 3. ForwardToIssuer com QMUX — implementação completa
+
+```java
+public class ForwardToIssuer implements TransactionParticipant {
+
+    private static final long TIMEOUT_MS = 30_000;
+    private static final String MUX_NAME  = "issuer-mux";
+
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        ISOMsg request = ctx.get("REQUEST");
+
+        try {
+            QMUX mux = (QMUX) NameRegistrar.get(MUX_NAME);
+
+            // Envia e aguarda
+            ISOMsg response = mux.request(request, TIMEOUT_MS);
+
+            if (response == null) {
+                // Emissor não respondeu a tempo
+                ctx.put("RESPONSE_CODE", "68");
+                ctx.put("NEEDS_REVERSAL", Boolean.TRUE);
+                return ABORTED;
+            }
+
+            String rc = response.getString(39);
+            ctx.put("RESPONSE", response);
+            ctx.put("RESPONSE_CODE", rc);
+
+            // Só entra na join-list se aprovado (débito aconteceu)
+            return "00".equals(rc) ? PREPARED : ABORTED;
+
+        } catch (ISOException | NotFoundException e) {
+            ctx.put("RESPONSE_CODE", "96");
+            return ABORTED;
+        }
+    }
+
+    @Override
+    public void commit(long id, Serializable context) {
+        // Aprovação confirmada — persiste o registro de auditoria
+        Context ctx = (Context) context;
+        auditService.recordApproval((ISOMsg) ctx.get("REQUEST"),
+                                    (ISOMsg) ctx.get("RESPONSE"));
+    }
+
+    @Override
+    public void abort(long id, Serializable context) {
+        // Aprovado mas algum participant seguinte falhou → DEVE reverter
+        Context ctx = (Context) context;
+        ISOMsg request = ctx.get("REQUEST");
+        if (request == null) return;
+
+        try {
+            QMUX mux = (QMUX) NameRegistrar.get(MUX_NAME);
+            MessageFactory factory = ctx.get("MESSAGE_FACTORY");
+            ISOMsg reversal = factory.buildReversalRequest(request);
+            ISOMsg reversalResponse = mux.request(reversal, 45_000);
+
+            if (reversalResponse != null) {
+                String rc = reversalResponse.getString(39);
+                if ("00".equals(rc) || "76".equals(rc)) {
+                    log.info("ForwardToIssuer.abort() — reversal ok, STAN={}",
+                             safeGet(request, 11));
+                    return;
+                }
+            }
+            // Reversal falhou — enfileira para retry
+            safQueue.enqueue(reversal);
+            log.error("ForwardToIssuer.abort() — reversal falhou, enfileirado");
+
+        } catch (Exception e) {
+            log.error("ForwardToIssuer.abort() — erro ao enviar reversal", e);
+        }
+    }
+
+    private String safeGet(ISOMsg msg, int de) {
+        try { return msg.getString(de); } catch (Exception e) { return "?"; }
+    }
+}
+```
+
+## 4. Late Response — detectando e descartando
+
+```java
+// O QMUX descarta late responses por padrão (timeout já venceu, slot liberado).
+// Para detectar e logar late responses, implemente um ISORequestListener
+// no canal de recebimento:
+
+public class LateResponseDetector implements ISORequestListener {
+
+    private final Set<String> pendingSTANs; // STANs que ainda esperam resposta
+
+    @Override
+    public boolean process(ISOSource source, ISOMsg msg) {
+        String mti = msg.getMTI();
+        // Só nos interessa respostas (segundo dígito 1 = response)
+        if (mti == null || mti.charAt(2) != '1') return false;
+
+        try {
+            String stan = msg.getString(11);
+            String tid  = msg.hasField(41) ? msg.getString(41) : "";
+            String key  = stan + "|" + tid;
+
+            if (!pendingSTANs.contains(key)) {
+                // Response chegou após timeout (QMUX já descartou o slot)
+                log.warn("LATE_RESPONSE detectada: MTI={} STAN={} RC={}",
+                         mti, stan, msg.getString(39));
+                metrics.incrementLateResponse();
+
+                // Se aprovada, pode gerar reversal preventivo
+                if ("00".equals(msg.getString(39))) {
+                    log.error("LATE_RESPONSE APROVADA — investigar descasamento financeiro! STAN={}", stan);
+                    alertOperations("LATE_APPROVAL", msg);
+                }
+                return true; // consumida — não propaga
+            }
+        } catch (ISOException e) {
+            log.error("LateResponseDetector: erro ao processar msg", e);
+        }
+        return false;
+    }
+}
+```
 
 ## 4. Exercícios Semana 8
 
