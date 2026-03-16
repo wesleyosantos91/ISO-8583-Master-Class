@@ -1,7 +1,5 @@
 package com.lab.participants;
 
-import org.jpos.iso.ISOMsg;
-import org.jpos.iso.ISOException;
 import org.jpos.transaction.GroupSelector;
 
 import java.io.Serializable;
@@ -27,7 +25,10 @@ public class QueryHost implements GroupSelector {
     @Override
     public int prepare(long id, Serializable context) {
         // TODO Semana 7: Extrair ISOMsg do context e validar que existe
-        return PREPARED;
+        // 1. Obter ISOMsg do context
+        // 2. Se null → ABORTED com RESPONSE_CODE=20 (invalid response)
+        // 3. Se ok → gravar START_TIME no context, retornar PREPARED
+        throw new UnsupportedOperationException("Implementar na Semana 7");
     }
 
     @Override
