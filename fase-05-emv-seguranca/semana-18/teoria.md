@@ -465,14 +465,85 @@ HSM (Hardware Security Module)
 
 ## 2. DUKPT (Derived Unique Key Per Transaction)
 
+### 2.1 Hierarquia de Chaves
+
 ```
-BDK (Base Derivation Key) — no HSM do adquirente
-  └── IPEK (Initial PIN Encryption Key) — injetada no terminal
+BDK (Base Derivation Key, 128 bits) — fica NO HSM do adquirente. Nunca sai.
+  └── IPEK (Initial PIN Encryption Key, 128 bits)
+        = 3DES( BDK, KSN_inicial[bits 0..63] XOR C0C0C0C000000000 )
+        injetada no terminal durante key injection ceremony
       └── Para cada transação:
-          KSN (Key Serial Number) = Terminal ID + Contador
-          Session Key = derive(IPEK, KSN)
-          PIN Block criptografado = 3DES(Session Key, PIN Block claro)
+            KSN = Terminal ID (59 bits) + Contador de transação (21 bits)
+            Session Key = Future_Key_Register derivado do IPEK + KSN
+            EncryptedPINBlock = 3DES( Session Key, ClearPINBlock )
 ```
+
+### 2.2 Estrutura do KSN
+
+```
+┌──────────────────────────┬──────────────────────┐
+│  Key Set ID (59 bits)    │  Counter (21 bits)    │
+│  = Terminal ID + BDK ID  │  0 → 2.097.151 máx   │
+└──────────────────────────┴──────────────────────┘
+Total: 80 bits = 10 bytes
+```
+
+O contador incrementa a cada transação. Quando atinge o máximo (2^21 - 1), o terminal precisa ser re-injetado com nova IPEK.
+
+### 2.3 Derivação da Session Key (simplificado)
+
+O algoritmo DUKPT usa um processo de "future key register" baseado em ANSI X9.24-1:
+
+```
+1. Começa com IPEK no "Current Key Register"
+2. Para cada bit '1' do contador (da esquerda para a direita):
+     a. XOR o KSN com a máscara correspondente ao bit
+     b. Current Key = 3DES( Current Key, KSN XOR mask )
+3. Session Key = Current Key XOR derivation constant (00000000000000FF...)
+```
+
+Pseudocódigo didático:
+```
+IPEK = deriveIPEK(BDK, KSN_initial)
+
+function deriveSessionKey(IPEK, KSN):
+    registers = [IPEK]  # array de chaves intermediárias
+    counter = KSN & 0x1FFFFF  # 21 bits menos significativos
+
+    for each bit i (0 to 20, high to low):
+        if bit i of counter == 1:
+            mask = shiftRegisterMask(i)
+            prevKey = registers[-1]
+            newKey = TDES_EDE( prevKey, (KSN XOR mask)[0:8] )
+            registers.append(newKey)
+
+    sessionKey = registers[-1] XOR PIN_ENCRYPTION_VARIANT
+    return sessionKey
+```
+
+**Vantagem:** Mesmo se um atacante capturar e quebrar uma session key, ele não consegue derivar chaves de outras transações — o processo só avança para frente (forward secrecy).
+
+### 2.4 O que o adquirente recebe e como decripta
+
+Junto com DE52 (PIN block criptografado), o terminal envia o **KSN** (geralmente em campo proprietário ou DE 53):
+
+```
+Terminal → Switch:
+  DE 52 = 3DES(SessionKey, PINBlock)        8 bytes
+  KSN   = Terminal ID + Counter             10 bytes (campo proprietário)
+
+Switch → HSM do adquirente:
+  "Decripta DE52 usando BDK com este KSN"
+
+HSM:
+  1. Reconstrói IPEK = deriveIPEK(BDK, KSN)
+  2. Reconstrói SessionKey usando a lógica do counter
+  3. Decripta PIN Block
+  4. Re-criptografa com ZPK da rede destino
+  5. Retorna EncPINBlock' para o switch
+```
+
+O BDK fica **permanentemente no HSM** do adquirente. O switch nunca vê chaves em claro.
 
 **Vantagem:** Se uma chave de sessão vazar, só compromete aquela transação. Não afeta as demais.
 

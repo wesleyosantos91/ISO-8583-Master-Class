@@ -471,10 +471,14 @@ public class DuplicateChecker implements TransactionParticipant {
     
     private String buildDedupKey(ISOMsg msg) throws ISOException {
         // STAN + Terminal ID + Amount + PAN(last4) + Processing Code
+        String pan    = msg.getString(2);
+        String last4  = (pan != null && pan.length() >= 4)
+                        ? pan.substring(pan.length() - 4)
+                        : "0000"; // fallback seguro: PAN ausente ou mascarado
         return msg.getString(11) + "|"
              + msg.getString(41) + "|"
-             + msg.getString(4) + "|"
-             + msg.getString(2).substring(msg.getString(2).length() - 4) + "|"
+             + msg.getString(4)  + "|"
+             + last4             + "|"
              + msg.getString(3);
     }
 }
