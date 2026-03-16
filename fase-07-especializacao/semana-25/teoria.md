@@ -1,140 +1,48 @@
-# Fase 6 — Produção (Semanas 21-24)
+# Semana 25 — Mercado Brasileiro Profundo
+
+## Por que esta semana é diferente das anteriores?
+
+Nas semanas 1-24 você aprendeu o protocolo. Agora começa a especialização real. O mercado brasileiro de pagamentos tem particularidades que não existem em nenhum outro país do mundo — e dominar essas particularidades é o que separa um implementador de um **especialista referência**.
 
 ---
 
-# Semana 21 — Observabilidade para Pagamentos
+## 1. A Regulação que Moldou Tudo: Lei 12.865/2013
 
-## 1. As métricas que um switch precisa ter
+A Lei 12.865 criou o marco regulatório dos arranjos de pagamento no Brasil. Entender essa lei é entender por que o mercado funciona como funciona.
 
-```java
-// Métricas obrigatórias — Micrometer/Prometheus
-public class SwitchMetrics {
-    
-    private final MeterRegistry registry;
-    
-    // LATÊNCIA por MTI e rota
-    public void recordLatency(String mti, String route, boolean approved, long ms) {
-        Timer.builder("iso8583.auth.latency")
-            .tag("mti", mti)
-            .tag("route", route)
-            .tag("result", approved ? "approved" : "declined")
-            .register(registry)
-            .record(ms, TimeUnit.MILLISECONDS);
-    }
-    
-    // VOLUME por MTI e response code
-    public void recordTransaction(String mti, String responseCode, String route) {
-        Counter.builder("iso8583.transactions.total")
-            .tag("mti", mti)
-            .tag("rc", responseCode)
-            .tag("route", route)
-            .tag("on_us", route.equals("ON_US") ? "true" : "false")
-            .register(registry)
-            .increment();
-    }
-    
-    // ERROS — timeouts, reversals, duplicatas
-    public void recordTimeout(String mti, String destination) {
-        Counter.builder("iso8583.timeout.total")
-            .tag("mti", mti)
-            .tag("destination", destination)
-            .register(registry).increment();
-    }
-    
-    // SATURAÇÃO — conexões ativas por destino
-    public void registerConnectionGauge(String destination, AtomicInteger count) {
-        Gauge.builder("iso8583.connections.active", count::get)
-            .tag("destination", destination)
-            .register(registry);
-    }
-}
-```
+### 1.1 O que a lei fez
 
-## 2. SLAs quantificados
+Antes de 2013: Visa e Mastercard operavam sem regulação específica. Cielo e Rede tinham exclusividade de bandeiras — Cielo só aceitava Visa, Rede só aceitava Mastercard. O lojista não tinha escolha.
 
-| Métrica | Meta | Alerta |
-|---------|------|--------|
-| Auth latency P95 (on-us) | < 150ms | > 300ms |
-| Auth latency P95 (off-us) | < 500ms | > 1000ms |
-| Disponibilidade | 99.99% | Qualquer downtime |
-| Taxa de aprovação | > 85% | < 75% |
-| Taxa de timeout | < 0.1% | > 0.5% |
-| Taxa de reversal | < 0.5% | > 2% |
-| Duplicatas detectadas | N/A | > 1% do volume |
+Depois de 2013:
+- BACEN passou a regular e supervisionar arranjos de pagamento
+- Exclusividade entre adquirentes e bandeiras foi proibida
+- Credenciamento cruzado se tornou obrigatório
+- Novos entrantes (Stone, PagSeguro, Getnet) puderam competir
+- Emissores foram separados regulatoriamente de adquirentes
 
-## 3. Logs estruturados
+**Impacto técnico direto:** O mesmo terminal passou a precisar suportar múltiplas bandeiras. O switch do adquirente precisa rotear por bandeira, não apenas por BIN isolado.
 
-```java
-// Formato de log para cada transação
-log.info("txn.processed mti={} stan={} pan={} amount={} rc={} route={} latency_ms={} duplicate={}",
-    msg.getMTI(),
-    msg.getString(11),
-    PANMasker.mask(msg.getString(2)),
-    msg.getString(4),
-    responseCode,
-    route,
-    latencyMs,
-    isDuplicate);
-```
+### 1.2 Arranjos de Pagamento — O que são
 
-## 4. Exercícios Semana 21
-
-1. **Implemente SwitchMetrics** com todas as métricas listadas
-2. **Adicione logging estruturado** em todos os participants
-3. **Crie queries de investigação** (como se usasse Elasticsearch/Grafana)
-4. **Documente `runbook-observability.md`** com: o que monitorar, thresholds, como investigar
-
-### Desafio
-Construa um cenário onde a taxa de aprovação cai de 87% para 62% em 10 minutos. Usando apenas métricas e logs, diagnostique a causa (dica: pode ser emissor fora, BIN errado, timeout, campo inválido, etc.).
-
----
-
-# Semana 22 — Troubleshooting Avançado
-
-## 1. Taxonomia de falhas
-
-| Categoria | Exemplos | Como identificar |
-|-----------|----------|-----------------|
-| **Rede/TCP** | Conexão recusada, timeout TCP, RST | Logs de canal, Wireshark |
-| **Framing** | Header de tamanho errado, bytes sobrando | Hex dump, contagem de bytes |
-| **Encoding** | BCD vs ASCII, EBCDIC vs ASCII | Comparar raw bytes vs valor esperado |
-| **Spec/Packager** | Campo no lugar errado, tamanho errado | Comparar com spec da bandeira |
-| **Bitmap** | Campo presente no bitmap mas ausente nos dados | Parser de bitmap vs dados |
-| **Negócio** | Response code inesperado, decline sem motivo claro | Análise do DE39 e contexto |
-| **Roteamento** | Transação vai pro destino errado | Verificar BIN table e logs de routing |
-
-## 2. Playbook de troubleshooting
+Um **arranjo de pagamento** é o conjunto de regras, procedimentos e infraestrutura que permite transferência de recursos entre pagadores e recebedores. O BACEN autoriza e supervisiona cada arranjo.
 
 ```
-PASSO 1: Qual é o sintoma?
-  - DE39=30 (Format Error) → problema de encoding/spec
-  - DE39=91 (Issuer unavailable) → problema de rede/destino
-  - DE39=96 (System malfunction) → erro interno no receptor
-  - Timeout → problema de rede ou emissor lento
-
-PASSO 2: Isolar o escopo
-  - Afeta todos os terminais ou só alguns?
-  - Afeta todas as bandeiras ou só uma?
-  - Afeta todos os BINs ou só uma faixa?
-  - Começou quando? Mudou algo?
-
-PASSO 3: Analisar a mensagem
-  - Hex dump do request enviado
-  - Hex dump da response (se houver)
-  - Comparar com uma mensagem que funciona (baseline)
-  - Verificar bitmap vs dados presentes
-
-PASSO 4: Reproduzir
-  - Enviar mesma mensagem em ambiente de teste
-  - Testar com outro terminal/BIN/bandeira
-  - Simular com dados de produção (mascarados)
+Arranjos autorizados no Brasil (principais):
+  Visa (Visa do Brasil Arranjos de Pagamento Ltda)
+  Mastercard (Mastercard Brasil Soluções de Pagamento Ltda)
+  Elo (Elo Serviços S.A.)
+  American Express (Amex do Brasil)
+  Hipercard (Hipercard Administradora de Cartões)
+  PIX (arranjo do próprio BACEN — Banco Central)
 ```
 
-## 3. Exercícios Semana 22
+### 1.3 Interoperabilidade obrigatória
 
-1. **Monte catálogo de 15+ falhas** com: sintoma, causa, diagnóstico, correção
-2. **Crie massa de teste** com mensagens intencionalmente quebradas
-3. **Resolva 5 cenários de incidente** (fornecidos abaixo)
+O BACEN exige interoperabilidade. Na prática:
+- Todo credenciador deve aceitar todos os arranjos autorizados
+- Todo emissor deve participar de pelo menos um arranjo
+- Portabilidade de domicílio bancário é obrigatória
 
 ### Cenário A — Solução
 Dump: `0200B238000108A18000001945320151128303660030000000001500003141600001234561600000314...`
@@ -483,9 +391,15 @@ Alertar quando passar de 10.000 entradas.
 ### Desafio
 Crie um **playbook de incidente** formatado como runbook para o time de operações. Deve cobrir os 15 incidentes acima com: detecção (qual alerta dispara), diagnóstico (queries/comandos a executar), resolução (passos), verificação (como confirmar que está resolvido), e prevenção (o que mudar para não acontecer de novo).
 
----
+O Elo usa especificação própria baseada em ISO 8583, com extensões relevantes:
 
-# Semana 23 — Reconciliação Real
+| Campo | Visa/Master | Elo | Diferença |
+|-------|-------------|-----|-----------|
+| DE 48 | Subelementos proprietários | Subelementos próprios Elo | Layout diferente |
+| DE 60 | Pouco usado | Central para parcelamento | Campos de parcelas Elo |
+| DE 62 | Visa-specific | Elo-specific | Layout diferente |
+| Response codes | Padrão ISO | Maioria igual + 8xx próprios | Alguns códigos específicos |
+| Parcelamento | DE 48 principalmente | DE 60 principalmente | Especificação Elo |
 
 ## 1. O ciclo autorização → clearing → settlement
 
@@ -780,34 +694,24 @@ public class ReconciliationReporter {
 ### Desafio
 Processe 10.000 autorizações e 9.800 registros de clearing. Identifique e classifique todas as exceções. Monte relatório. Verifique: qual a diferença líquida? Quais exceções têm maior valor financeiro em risco?
 
----
+Elo tem a maior taxa de transações on-us do mercado porque:
+- Bradesco emite Elo → Cielo (controlada pelo Bradesco) adquire → rota on-us
+- Caixa emite Elo → terminal próprio Caixa → rota on-us
+- BB emite Elo → terminal BB → rota on-us
 
-# Semana 24 — Arquitetura do Switch
-
-## Exercícios
-1. **Documente a arquitetura final** do payment-switch-lab em diagrama C4 (Context, Container, Component)
-2. **Escreva ADRs** para as 5 decisões mais importantes:
-   - Por que TransactionManager + Participants?
-   - Por que cache em memória para deduplicação?
-   - Por que timeout de 30s?
-   - Sync vs async para reversal?
-   - Como escalar horizontalmente?
-3. **Diagrama de deployment** com Docker Compose
-4. **Documente trade-offs** explicitamente
-
-### Desafio
-Apresente a arquitetura para 3 audiências (escreva o pitch para cada):
-1. Arquiteto — foco em decisões técnicas e trade-offs
-2. Gerente/Head — foco em risco, custo e prazo
-3. Time de operações — foco em monitoramento e manutenção
+Menor custo de interchange para essas instituições e menor latência.
 
 ---
 
-# Fase 7 — Especialização (Semanas 25-28)
+## 3. Teto de Interchange — A Decisão do BACEN
 
----
+### 3.1 A regulação
 
-# Semana 25 — Mercado Brasileiro
+O BACEN impôs teto de interchange em débito:
+- **Débito:** máximo 0,5% (Resolução BCB nº 150/2021)
+- **Pré-pago:** máximo 0,5%
+- **Crédito à vista:** sem teto definido regulatório ainda (mercado pratica ~1,5%)
+- **Crédito parcelado:** sem teto (mercado pratica 1,8–2,2% dependendo das parcelas)
 
 ## 1. Regulação — Lei 12.865/2013 e BACEN
 
@@ -1006,9 +910,12 @@ Compra de R$ 1.200 em 12x sem juros:
 ### Desafio
 Implemente `InterchangeCalculator` com tabela completa (débito, crédito à vista, parcelado 2-6x, parcelado 7-12x) para as bandeiras Visa, Mastercard e Elo. Adicione lógica de on-us detection baseada em BIN do emissor vs BIN do adquirente.
 
----
+### 4.1 O problema que resolve
 
-# Semana 26 — Fluxos Avançados
+Lojista vende R$ 100.000 em 12x sem juros em outubro. Receberia:
+- Novembro: R$ 8.333
+- Dezembro: R$ 8.333
+- ... outubro do ano seguinte: R$ 8.333
 
 ## 1. Pre-Authorization — Estado e Lifecycle
 
@@ -1255,7 +1162,11 @@ Implemente um `AdvancedFlowIntegrationTest` que executa os 4 fluxos acima sequen
 
 ---
 
-# Semana 27 — Certificação e ISO 20022
+## 6. DREX — O Real Digital
+
+### 6.1 O que é
+
+DREX é a CBDC (Central Bank Digital Currency) do Brasil, desenvolvida pelo BACEN em blockchain privada (Hyperledger Besu). Fase piloto em 2024-2025 com instituições selecionadas.
 
 ## 1. Certificação com Bandeiras — O Processo Real
 
@@ -1486,57 +1397,15 @@ Rode seu test deck completo. Para cada cenário que falhar, abra um "bug report"
 
 ---
 
-# Semana 28 — Projeto Final
+## Resumo da Semana
 
-## Entregáveis
-
-### 1. Mini-switch funcional
-- [ ] 0800/0810 (echo, sign-on)
-- [ ] 0200/0210 (autorização single message)
-- [ ] 0100/0110 (autorização dual message)
-- [ ] 0400/0410 (reversal)
-- [ ] 0220/0230 (advice)
-- [ ] Roteamento por BIN (on-us/off-us)
-- [ ] Parcelamento (DE 48/60/63)
-- [ ] Deduplicação
-- [ ] Auto-reversal por timeout
-- [ ] Health check de canais
-- [ ] Logs mascarados (PCI)
-- [ ] Métricas (latência, volume, RC, timeouts)
-
-### 2. Documentação
-- [ ] README técnico completo
-- [ ] ARCHITECTURE.md com C4 e ADRs
-- [ ] Runbook operacional
-- [ ] Catálogo de response codes
-- [ ] Playbook de troubleshooting
-- [ ] Glossário de 50+ termos
-- [ ] Diagrama da jornada end-to-end
-
-### 3. Testes
-- [ ] > 80% de cobertura
-- [ ] Testes unitários por participant
-- [ ] Testes de integração E2E
-- [ ] Mini test deck com 30+ cenários
-- [ ] Testes de falha (timeout, conexão down, duplicata)
-
-### 4. Apresentação
-Prepare apresentação do sistema para:
-- [ ] Arquiteto (10 min — decisões técnicas)
-- [ ] Head de produto (5 min — valor de negócio)
-- [ ] Time de operações (10 min — como monitorar e operar)
-- [ ] Desenvolvedor júnior (15 min — como funciona)
-
-### Exercício Final
-Resolva este incidente simulado do início ao fim:
-
-> "Às 14:32 de sexta-feira, o monitoring alertou que a taxa de timeout subiu de 0.1% para 15% em transações off-us via Visa. Transações on-us e Mastercard estão normais. O time de negócio está cobrando — é Black Friday e estamos perdendo vendas."
-
-1. Qual sua primeira ação?
-2. Que dados pede?
-3. Qual seu diagnóstico inicial?
-4. Qual a correção?
-5. Como prevenir no futuro?
-6. Como comunica ao negócio?
-
-Documente tudo como se fosse um RCA (Root Cause Analysis) real.
+| Tema | O que você deve dominar |
+|------|------------------------|
+| Lei 12.865 | Marco regulatório, proibição de exclusividade, abertura do mercado |
+| Arranjos | O BACEN autoriza cada arranjo, todos devem ser interoperáveis |
+| Elo | Bandeira nacional, ISO 8583 com extensões próprias, alta taxa on-us |
+| Interchange | Teto 0,5% débito, impacto em emissores e MDR, tabelas no switch |
+| Recebíveis | Parcelas registradas em CIP/CERC/TAG, portabilidade obrigatória |
+| Open Finance | TPP, PISP, nova camada sobre ISO 8583, convergência com PIX |
+| DREX | CBDC em piloto, não usa ISO 8583, não substitui cartões no médio prazo |
+| Sub-adquirência | Regulação BCB 80/2021, responsabilidade do adquirente master |

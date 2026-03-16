@@ -347,3 +347,59 @@ A mensagem serializada (concatenação de tudo) seria:
 | Uso no Brasil | **Dominante** | Raro | Emergente |
 
 **Na prática:** Você vai trabalhar com 1987 (0xxx) na grande maioria dos casos. A versão 2003 aparece em implementações mais novas, mas a base instalada é 1987.
+
+---
+
+## Exercícios Semana 2
+
+1. **Decodifique MTIs:**
+   Para cada MTI abaixo, diga: versão, classe, função, origem, quem envia, quem recebe e em qual cenário é usado:
+   - `0100`, `0110`, `0200`, `0400`, `0420`, `0800`, `0810`
+   - **Bônus:** Qual MTI representa "o adquirente está retransmitindo um financial request porque não recebeu resposta"?
+
+2. **Leitura de bitmap:**
+   Dado o bitmap hexadecimal `723C054028C28001`, determine quais Data Elements estão presentes. Mostre o passo a passo da conversão hex → binário → lista de campos.
+
+   Depois responda: este bitmap tem secondary bitmap? Como você sabe?
+
+3. **Construção de bitmap:**
+   Uma mensagem de autorização `0100` contém os campos: DE2, DE3, DE4, DE7, DE11, DE12, DE13, DE22, DE25, DE32, DE35, DE41, DE42, DE49, DE55. Monte o bitmap primário em binário e depois converta para hexadecimal.
+
+4. **Análise de tamanho de mensagem:**
+   Calcule o tamanho total em bytes da seguinte mensagem (packager ASCII, bitmap hex):
+   ```
+   MTI:   0200             → 4 bytes
+   BMP:   (campos acima)   → ? bytes (hex ASCII)
+   DE2:   PAN 16 dígitos   → ? bytes (LLVAR)
+   DE3:   003000           → ? bytes (fixo)
+   DE4:   000000015000     → ? bytes (fixo)
+   DE7:   0314143025       → ? bytes (fixo)
+   DE11:  123456           → ? bytes (fixo)
+   DE41:  TERM0001         → ? bytes (fixo)
+   DE49:  986              → ? bytes (fixo)
+   DE55:  45 bytes de EMV  → ? bytes (LLLVAR)
+   ```
+   Qual seria o tamanho total? Agora calcule para bitmap binário (ao invés de hex). Qual é menor e por quê?
+
+5. **Correlação e STAN:**
+   Um switch processa 500 transações por segundo. O STAN tem 6 dígitos (0 a 999999).
+   - Em quantos segundos o STAN dá a volta completa nesse volume?
+   - Qual o risco real se o switch usa apenas o STAN como chave de correlação?
+   - Proponha uma chave de correlação composta que elimine esse risco.
+
+### Desafio — Parser from scratch
+
+Implemente em Java (ou na linguagem de sua escolha) um parser simples que:
+
+1. Recebe um array de bytes representando uma mensagem ISO 8583 no formato ASCII
+2. Extrai o MTI (primeiros 4 bytes)
+3. Lê o bitmap (próximos 16 bytes se hex ASCII, ou 8 bytes se binário) e determina quais campos estão presentes
+4. Para cada campo presente, lê o valor de acordo com o tipo (fixo, LLVAR, LLLVAR)
+5. Retorna uma estrutura `Map<Integer, String>` com os campos decodificados
+
+Use esta mensagem de teste para validar:
+```
+"02007230040128C080011645320151128303660030000000000150000314143025123456TERM0001986"
+```
+
+Campos esperados após parse: DE2=4532015112830366, DE3=003000, DE4=000000015000, DE7=0314143025, DE11=123456, DE41=TERM0001, DE49=986

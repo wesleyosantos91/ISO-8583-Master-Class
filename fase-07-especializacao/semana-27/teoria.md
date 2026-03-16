@@ -1,140 +1,60 @@
-# Fase 6 — Produção (Semanas 21-24)
+# Semana 27 — PCI-DSS: Como Certificar um Sistema de Pagamentos
+
+## Por que PCI-DSS é essencial para o especialista?
+
+Qualquer sistema que armazene, processe ou transmita dados de cartão está sujeito ao PCI-DSS. Como especialista em ISO 8583, você vai desenvolver e arquitetar sistemas que fazem exatamente isso — e precisa saber não apenas o que é obrigatório, mas **como projetar o sistema para ser certificável desde o início**.
 
 ---
 
-# Semana 21 — Observabilidade para Pagamentos
+## 1. O que é PCI-DSS
 
-## 1. As métricas que um switch precisa ter
+**PCI-DSS (Payment Card Industry Data Security Standard)** é um conjunto de requisitos de segurança criado pelo **PCI SSC (Security Standards Council)**, formado por Visa, Mastercard, Amex, Discover e JCB.
 
-```java
-// Métricas obrigatórias — Micrometer/Prometheus
-public class SwitchMetrics {
-    
-    private final MeterRegistry registry;
-    
-    // LATÊNCIA por MTI e rota
-    public void recordLatency(String mti, String route, boolean approved, long ms) {
-        Timer.builder("iso8583.auth.latency")
-            .tag("mti", mti)
-            .tag("route", route)
-            .tag("result", approved ? "approved" : "declined")
-            .register(registry)
-            .record(ms, TimeUnit.MILLISECONDS);
-    }
-    
-    // VOLUME por MTI e response code
-    public void recordTransaction(String mti, String responseCode, String route) {
-        Counter.builder("iso8583.transactions.total")
-            .tag("mti", mti)
-            .tag("rc", responseCode)
-            .tag("route", route)
-            .tag("on_us", route.equals("ON_US") ? "true" : "false")
-            .register(registry)
-            .increment();
-    }
-    
-    // ERROS — timeouts, reversals, duplicatas
-    public void recordTimeout(String mti, String destination) {
-        Counter.builder("iso8583.timeout.total")
-            .tag("mti", mti)
-            .tag("destination", destination)
-            .register(registry).increment();
-    }
-    
-    // SATURAÇÃO — conexões ativas por destino
-    public void registerConnectionGauge(String destination, AtomicInteger count) {
-        Gauge.builder("iso8583.connections.active", count::get)
-            .tag("destination", destination)
-            .register(registry);
-    }
-}
+Versão atual: **PCI-DSS 4.0** (lançada em março/2022, v4.0.1 em junho/2024).
+
 ```
-
-## 2. SLAs quantificados
-
-| Métrica | Meta | Alerta |
-|---------|------|--------|
-| Auth latency P95 (on-us) | < 150ms | > 300ms |
-| Auth latency P95 (off-us) | < 500ms | > 1000ms |
-| Disponibilidade | 99.99% | Qualquer downtime |
-| Taxa de aprovação | > 85% | < 75% |
-| Taxa de timeout | < 0.1% | > 0.5% |
-| Taxa de reversal | < 0.5% | > 2% |
-| Duplicatas detectadas | N/A | > 1% do volume |
-
-## 3. Logs estruturados
-
-```java
-// Formato de log para cada transação
-log.info("txn.processed mti={} stan={} pan={} amount={} rc={} route={} latency_ms={} duplicate={}",
-    msg.getMTI(),
-    msg.getString(11),
-    PANMasker.mask(msg.getString(2)),
-    msg.getString(4),
-    responseCode,
-    route,
-    latencyMs,
-    isDuplicate);
+Quem deve seguir PCI-DSS:
+  - Merchants (lojistas que aceitam cartão)
+  - Adquirentes
+  - Processadoras
+  - Gateways de pagamento
+  - Provedores de serviço que armazenam/processam/transmitem dados de cartão
 ```
-
-## 4. Exercícios Semana 21
-
-1. **Implemente SwitchMetrics** com todas as métricas listadas
-2. **Adicione logging estruturado** em todos os participants
-3. **Crie queries de investigação** (como se usasse Elasticsearch/Grafana)
-4. **Documente `runbook-observability.md`** com: o que monitorar, thresholds, como investigar
-
-### Desafio
-Construa um cenário onde a taxa de aprovação cai de 87% para 62% em 10 minutos. Usando apenas métricas e logs, diagnostique a causa (dica: pode ser emissor fora, BIN errado, timeout, campo inválido, etc.).
 
 ---
 
-# Semana 22 — Troubleshooting Avançado
+## 2. Dados que Estão no Escopo
 
-## 1. Taxonomia de falhas
+### 2.1 Cardholder Data (CHD) — pode armazenar com proteção
 
-| Categoria | Exemplos | Como identificar |
-|-----------|----------|-----------------|
-| **Rede/TCP** | Conexão recusada, timeout TCP, RST | Logs de canal, Wireshark |
-| **Framing** | Header de tamanho errado, bytes sobrando | Hex dump, contagem de bytes |
-| **Encoding** | BCD vs ASCII, EBCDIC vs ASCII | Comparar raw bytes vs valor esperado |
-| **Spec/Packager** | Campo no lugar errado, tamanho errado | Comparar com spec da bandeira |
-| **Bitmap** | Campo presente no bitmap mas ausente nos dados | Parser de bitmap vs dados |
-| **Negócio** | Response code inesperado, decline sem motivo claro | Análise do DE39 e contexto |
-| **Roteamento** | Transação vai pro destino errado | Verificar BIN table e logs de routing |
+| Dado | Campo ISO | Pode armazenar? | Deve proteger? |
+|------|-----------|----------------|----------------|
+| PAN (número do cartão) | DE 2 | Sim, mascarado | Sim (criptografia ou tokenização) |
+| Cardholder name | DE 45 | Sim | Sim |
+| Expiration date | DE 14 | Sim | Sim |
+| Service code | - | Sim | Sim |
 
-## 2. Playbook de troubleshooting
+### 2.2 Sensitive Authentication Data (SAD) — NUNCA armazenar após autorização
 
-```
-PASSO 1: Qual é o sintoma?
-  - DE39=30 (Format Error) → problema de encoding/spec
-  - DE39=91 (Issuer unavailable) → problema de rede/destino
-  - DE39=96 (System malfunction) → erro interno no receptor
-  - Timeout → problema de rede ou emissor lento
+| Dado | Campo ISO | Pode armazenar? |
+|------|-----------|----------------|
+| Full magnetic stripe (track data) | DE 35 / DE 36 | **NUNCA** |
+| CAV2/CVC2/CVV2/CID (código de segurança) | DE 48 subelemento | **NUNCA** |
+| PIN / PIN block | DE 52 | **NUNCA** |
+| ARQC / criptogramas EMV | DE 55 | Somente até autorização |
 
-PASSO 2: Isolar o escopo
-  - Afeta todos os terminais ou só alguns?
-  - Afeta todas as bandeiras ou só uma?
-  - Afeta todos os BINs ou só uma faixa?
-  - Começou quando? Mudou algo?
+**Regra de ouro para o switch:** Após receber a resposta de autorização (`0110`/`0210`), qualquer SAD nos logs ou banco de dados deve ser eliminada. Jamais persista DE 35, DE 52 ou CVV2.
 
-PASSO 3: Analisar a mensagem
-  - Hex dump do request enviado
-  - Hex dump da response (se houver)
-  - Comparar com uma mensagem que funciona (baseline)
-  - Verificar bitmap vs dados presentes
+```java
+// ERRADO — nunca faça isso
+log.info("Transaction: PAN={} Track2={} CVV={}", msg.getString(2), msg.getString(35), cvv);
 
-PASSO 4: Reproduzir
-  - Enviar mesma mensagem em ambiente de teste
-  - Testar com outro terminal/BIN/bandeira
-  - Simular com dados de produção (mascarados)
+// CORRETO
+log.info("Transaction: PAN={} STAN={} RC={}",
+    PANMasker.mask(msg.getString(2)), msg.getString(11), msg.getString(39));
 ```
 
-## 3. Exercícios Semana 22
-
-1. **Monte catálogo de 15+ falhas** com: sintoma, causa, diagnóstico, correção
-2. **Crie massa de teste** com mensagens intencionalmente quebradas
-3. **Resolva 5 cenários de incidente** (fornecidos abaixo)
+---
 
 ### Cenário A — Solução
 Dump: `0200B238000108A18000001945320151128303660030000000001500003141600001234561600000314...`
@@ -483,9 +403,10 @@ Alertar quando passar de 10.000 entradas.
 ### Desafio
 Crie um **playbook de incidente** formatado como runbook para o time de operações. Deve cobrir os 15 incidentes acima com: detecção (qual alerta dispara), diagnóstico (queries/comandos a executar), resolução (passos), verificação (como confirmar que está resolvido), e prevenção (o que mudar para não acontecer de novo).
 
----
-
-# Semana 23 — Reconciliação Real
+**Para o switch:**
+```java
+// PAN deve ser armazenado truncado ou mascarado
+String maskedPan = pan.substring(0, 6) + "******" + pan.substring(pan.length() - 4);
 
 ## 1. O ciclo autorização → clearing → settlement
 
@@ -780,34 +701,34 @@ public class ReconciliationReporter {
 ### Desafio
 Processe 10.000 autorizações e 9.800 registros de clearing. Identifique e classifique todas as exceções. Monte relatório. Verifique: qual a diferença líquida? Quais exceções têm maior valor financeiro em risco?
 
----
+**Para o switch:**
+- TLS 1.2+ em todas as conexões (adquirente → bandeira, switch → emissor)
+- Certificados válidos e atualizados
+- Sem SSL 3.0, TLS 1.0, TLS 1.1 (todos inseguros)
 
-# Semana 24 — Arquitetura do Switch
+### Requisito 5 — Proteção contra malware
+Proteger todos os sistemas e redes de softwares maliciosos.
 
-## Exercícios
-1. **Documente a arquitetura final** do payment-switch-lab em diagrama C4 (Context, Container, Component)
-2. **Escreva ADRs** para as 5 decisões mais importantes:
-   - Por que TransactionManager + Participants?
-   - Por que cache em memória para deduplicação?
-   - Por que timeout de 30s?
-   - Sync vs async para reversal?
-   - Como escalar horizontalmente?
-3. **Diagrama de deployment** com Docker Compose
-4. **Documente trade-offs** explicitamente
+**Para o switch:**
+- Antivírus nos servidores (se rodar em SO propósito geral)
+- Monitoramento de integridade de arquivos (FIM) em binários críticos
 
-### Desafio
-Apresente a arquitetura para 3 audiências (escreva o pitch para cada):
-1. Arquiteto — foco em decisões técnicas e trade-offs
-2. Gerente/Head — foco em risco, custo e prazo
-3. Time de operações — foco em monitoramento e manutenção
+### Requisito 6 — Desenvolvimento seguro
+Desenvolver e manter sistemas e softwares seguros.
 
----
+**Para o switch — o mais técnico para desenvolvedores:**
+```
+Exige:
+  - Treinamento em desenvolvimento seguro para toda a equipe
+  - Revisão de código para vulnerabilidades (OWASP Top 10)
+  - SAST (Static Analysis) e DAST (Dynamic Analysis) automatizados
+  - Processo de patching: críticos em 1 mês, outros em 3 meses
+  - Separação de ambientes: DEV != STAGE != PROD
+  - Dados de produção (PANs reais) NUNCA em ambientes de teste
+```
 
-# Fase 7 — Especialização (Semanas 25-28)
-
----
-
-# Semana 25 — Mercado Brasileiro
+### Requisito 7 — Controle de acesso
+Restringir acesso a componentes e dados por necessidade de negócio.
 
 ## 1. Regulação — Lei 12.865/2013 e BACEN
 
@@ -1006,9 +927,23 @@ Compra de R$ 1.200 em 12x sem juros:
 ### Desafio
 Implemente `InterchangeCalculator` com tabela completa (débito, crédito à vista, parcelado 2-6x, parcelado 7-12x) para as bandeiras Visa, Mastercard e Elo. Adicione lógica de on-us detection baseada em BIN do emissor vs BIN do adquirente.
 
----
+### Requisito 10 — Logs e monitoramento
+Registrar e monitorar todo o acesso a recursos e dados do titular.
 
-# Semana 26 — Fluxos Avançados
+**Para o switch:**
+```java
+// Logs de auditoria: WHO did WHAT to WHICH data WHEN from WHERE
+AuditLogger.log(AuditEvent.builder()
+    .userId(currentUser)
+    .action("VIEW_TRANSACTION")
+    .resource("TXN:" + rrn)
+    .ipAddress(remoteIp)
+    .timestamp(Instant.now())
+    .maskedPan(PANMasker.mask(pan))
+    .build());
+
+// Retenção: mínimo 12 meses (3 meses online, 9 meses arquivo)
+```
 
 ## 1. Pre-Authorization — Estado e Lifecycle
 
@@ -1155,6 +1090,9 @@ Emissor  → Switch: 0110  DE4=007500 DE39=10 (Partial Approved R$ 75,00)
 Switch   → Terminal: 0210 DE4=007500 DE39=10
 Terminal: "Aprovado parcial R$ 75,00. Deseja pagar R$ 25,00 com outro cartão?"
 ```
+Estratégias:
+  1. Tokenização: substituir PAN por token antes de passar para outros sistemas
+     → BI recebe token, não PAN → BI sai do escopo
 
 **DE39=10 = Partial Approval** (somente Visa/Master suportam; Elo também)
 
@@ -1255,7 +1193,7 @@ Implemente um `AdvancedFlowIntegrationTest` que executa os 4 fluxos acima sequen
 
 ---
 
-# Semana 27 — Certificação e ISO 20022
+## 5. SAQ vs ROC — Qual se Aplica?
 
 ## 1. Certificação com Bandeiras — O Processo Real
 
@@ -1486,57 +1424,14 @@ Rode seu test deck completo. Para cada cenário que falhar, abra um "bug report"
 
 ---
 
-# Semana 28 — Projeto Final
+## Resumo da Semana
 
-## Entregáveis
-
-### 1. Mini-switch funcional
-- [ ] 0800/0810 (echo, sign-on)
-- [ ] 0200/0210 (autorização single message)
-- [ ] 0100/0110 (autorização dual message)
-- [ ] 0400/0410 (reversal)
-- [ ] 0220/0230 (advice)
-- [ ] Roteamento por BIN (on-us/off-us)
-- [ ] Parcelamento (DE 48/60/63)
-- [ ] Deduplicação
-- [ ] Auto-reversal por timeout
-- [ ] Health check de canais
-- [ ] Logs mascarados (PCI)
-- [ ] Métricas (latência, volume, RC, timeouts)
-
-### 2. Documentação
-- [ ] README técnico completo
-- [ ] ARCHITECTURE.md com C4 e ADRs
-- [ ] Runbook operacional
-- [ ] Catálogo de response codes
-- [ ] Playbook de troubleshooting
-- [ ] Glossário de 50+ termos
-- [ ] Diagrama da jornada end-to-end
-
-### 3. Testes
-- [ ] > 80% de cobertura
-- [ ] Testes unitários por participant
-- [ ] Testes de integração E2E
-- [ ] Mini test deck com 30+ cenários
-- [ ] Testes de falha (timeout, conexão down, duplicata)
-
-### 4. Apresentação
-Prepare apresentação do sistema para:
-- [ ] Arquiteto (10 min — decisões técnicas)
-- [ ] Head de produto (5 min — valor de negócio)
-- [ ] Time de operações (10 min — como monitorar e operar)
-- [ ] Desenvolvedor júnior (15 min — como funciona)
-
-### Exercício Final
-Resolva este incidente simulado do início ao fim:
-
-> "Às 14:32 de sexta-feira, o monitoring alertou que a taxa de timeout subiu de 0.1% para 15% em transações off-us via Visa. Transações on-us e Mastercard estão normais. O time de negócio está cobrando — é Black Friday e estamos perdendo vendas."
-
-1. Qual sua primeira ação?
-2. Que dados pede?
-3. Qual seu diagnóstico inicial?
-4. Qual a correção?
-5. Como prevenir no futuro?
-6. Como comunica ao negócio?
-
-Documente tudo como se fosse um RCA (Root Cause Analysis) real.
+| Conceito | O que você deve saber |
+|----------|-----------------------|
+| SAD vs CHD | SAD nunca armazena; CHD protege com criptografia/tokenização |
+| 12 Requisitos | Rede, configuração, dados, trânsito, malware, dev, acesso, auth, físico, logs, testes, políticas |
+| CDE | Minimizar escopo usando tokenização, truncation e segmentação |
+| SAQ vs ROC | Switch/adquirente → ROC com QSA |
+| PAN Masking | First 6 + last 4 no mínimo |
+| TLS | 1.2+ obrigatório, sem SSL/TLS antigos |
+| Pentest | Anual + após mudanças significativas |
