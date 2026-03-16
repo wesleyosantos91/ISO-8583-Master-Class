@@ -39,20 +39,38 @@ Mini-switch de pagamentos ISO 8583 em Java com jPOS.
 | `observability` | Métricas e logging |
 | `integration-tests` | Testes E2E |
 
-## Como rodar
+## Quickstart — do zero ao primeiro 0800/0810 em 5 minutos
+
+```bash
+# 1. Build de todos os módulos
+mvn clean package -DskipTests
+
+# 2. Suba o stack completo (switch + issuer-simulator + acquirer-simulator)
+docker-compose up -d
+
+# 3. Verifique que o switch subiu (porta 8583)
+docker-compose logs -f payment-switch-lab
+
+# 4. Envie um echo (0800) via acquirer-simulator
+docker-compose exec acquirer-simulator java -jar acquirer-simulator.jar --echo
+
+# Esperado: 0810 com DE39=00 nos logs do switch
+```
+
+## Como rodar (sem Docker)
 
 ```bash
 # Build
-mvn clean package
+mvn clean package -DskipTests
 
-# Rodar switch
-java -jar switch/target/switch.jar
+# Terminal 1 — switch principal
+java -jar txn-manager/target/payment-switch-lab.jar
 
-# Rodar issuer simulator (outra janela)
-java -jar issuer-simulator/target/issuer-sim.jar
+# Terminal 2 — emissor simulado
+java -jar issuer-simulator/target/issuer-simulator.jar
 
-# Rodar acquirer simulator (enviar transações de teste)
-java -jar acquirer-simulator/target/acquirer-sim.jar
+# Terminal 3 — adquirente simulado (gera transações de teste)
+java -jar acquirer-simulator/target/acquirer-simulator.jar
 ```
 
 ## Docker
