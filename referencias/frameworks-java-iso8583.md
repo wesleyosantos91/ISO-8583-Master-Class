@@ -7,45 +7,46 @@
 
 ## Visão Geral
 
-O ecossistema Java para ISO 8583 tem **5 frameworks principais**, cada um com uma filosofia diferente:
+O ecossistema Java para ISO 8583 tem **7 frameworks principais**, cada um com uma filosofia diferente:
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Ecossistema Java ISO 8583                        │
-│                                                                     │
-│  ┌──────────┐  ┌───────────┐  ┌───────────────┐  ┌──────────────┐ │
-│  │  jPOS     │  │  j8583    │  │ jreactive-8583│  │ imohsenb     │ │
-│  │ (full     │  │ (parsing  │  │ (Netty +      │  │ ISO8583      │ │
-│  │  stack)   │  │  only)    │  │  j8583)       │  │ (builder)    │ │
-│  └──────────┘  └───────────┘  └───────────────┘  └──────────────┘ │
-│                                                                     │
-│  ┌─────────────────────────────────────────────┐                   │
-│  │ Apache Camel ISO-8583 (camel-iso8583)        │                   │
-│  │ (integração enterprise via j8583)            │                   │
-│  └─────────────────────────────────────────────┘                   │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      Ecossistema Java ISO 8583                           │
+│                                                                          │
+│  ┌──────────┐  ┌───────────┐  ┌───────────────┐  ┌──────────────┐      │
+│  │  jPOS     │  │  j8583    │  │ jreactive-8583│  │ imohsenb     │      │
+│  │ (full     │  │ (parsing  │  │ (Netty +      │  │ ISO8583      │      │
+│  │  stack)   │  │  only)    │  │  j8583)       │  │ (builder)    │      │
+│  └──────────┘  └───────────┘  └───────────────┘  └──────────────┘      │
+│                                                                          │
+│  ┌─────────────────────┐  ┌───────────────┐  ┌──────────────────────┐  │
+│  │ Apache Camel ISO-8583│  │ jBSBE         │  │ nucleus8583          │  │
+│  │ (enterprise via j8583)│  │ (annotations) │  │ (ultra-performance)  │  │
+│  └─────────────────────┘  └───────────────┘  └──────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Matriz Comparativa
 
-| Característica | jPOS | j8583 | jreactive-8583 | imohsenb ISO8583 | Camel ISO-8583 |
-|---|---|---|---|---|---|
-| **Licença** | AGPL v3 (ou comercial) | Apache 2.0 | Apache 2.0 | MIT | Apache 2.0 |
-| **Versão atual** | 2.1.9 | 3.0.1 | 1.5.1 | 1.0.5 | 4.14.x |
-| **Parse/Pack** | Sim | Sim | Sim (via j8583) | Sim | Sim (via j8583) |
-| **Networking TCP** | Sim (Channel) | Não | Sim (Netty) | Sim (NIO/SSL) | Sim (Camel routes) |
-| **TransactionManager** | Sim (2-phase) | Não | Não | Não | Não (usa Camel EIP) |
-| **Correlação (MUX)** | Sim (QMUX) | Não | Sim (auto) | Não | Sim (Camel) |
-| **Auto-reconnect** | Sim | N/A | Sim | Sim | Sim |
-| **SSL/TLS** | Sim | N/A | Sim | Sim | Sim |
-| **Mascaramento PAN** | Manual | Manual | Automático | Manual | Manual |
-| **Runtime autônomo** | Sim (Q2) | Não | Não | Não | Sim (Spring Boot) |
-| **Peso (JAR)** | ~5 MB | ~100 KB | ~200 KB | ~50 KB | ~100 KB + Camel |
-| **Curva de aprendizado** | Alta | Baixa | Média | Muito baixa | Média-alta |
-| **Comunidade** | Grande | Média | Pequena-média | Pequena | Grande (Camel) |
-| **Ideal para** | Switches completos | Parsing simples | Microsserviços async | Apps Android/simples | Integração enterprise |
+| Característica | jPOS | j8583 | jreactive-8583 | imohsenb ISO8583 | Camel ISO-8583 | jBSBE | nucleus8583 |
+|---|---|---|---|---|---|---|---|
+| **Licença** | AGPL v3 (ou comercial) | Apache 2.0 | Apache 2.0 | MIT | Apache 2.0 | Apache 2.0 | Apache 2.0 |
+| **Versão atual** | 2.1.9 | 3.0.1 | 1.5.1 | 1.0.5 | 4.14.x | 0.0.5 | (inativo) |
+| **Parse/Pack** | Sim | Sim | Sim (via j8583) | Sim | Sim (via j8583) | Sim (via j8583) | Sim |
+| **Networking TCP** | Sim (Channel) | Não | Sim (Netty) | Sim (NIO/SSL) | Sim (Camel routes) | Não | Não |
+| **TransactionManager** | Sim (2-phase) | Não | Não | Não | Não (usa Camel EIP) | Não | Não |
+| **Correlação (MUX)** | Sim (QMUX) | Não | Sim (auto) | Não | Sim (Camel) | Não | Não |
+| **Auto-reconnect** | Sim | N/A | Sim | Sim | Sim | N/A | N/A |
+| **SSL/TLS** | Sim | N/A | Sim | Sim | Sim | N/A | N/A |
+| **Mascaramento PAN** | Manual | Manual | Automático | Manual | Manual | Automático | Manual |
+| **Runtime autônomo** | Sim (Q2) | Não | Não | Não | Sim (Spring Boot) | Não | Não |
+| **Annotations** | Não | Não | Não | Não | Não | **Sim** | Não |
+| **Peso (JAR)** | ~5 MB | ~100 KB | ~200 KB | ~50 KB | ~100 KB + Camel | ~80 KB | ~60 KB |
+| **Curva de aprendizado** | Alta | Baixa | Média | Muito baixa | Média-alta | Baixa | Baixa |
+| **Comunidade** | Grande | Média | Pequena-média | Pequena | Grande (Camel) | Mínima | Mínima |
+| **Ideal para** | Switches completos | Parsing simples | Microsserviços async | Apps Android/simples | Integração enterprise | Microservices | Ultra-perf (legacy) |
 
 ---
 
@@ -677,6 +678,204 @@ class PaymentRoute extends RouteBuilder {
 
 ---
 
+## 6. jBSBE — Annotations para Microservices (j8583 on Steroids)
+
+### Quando usar
+- Microservices Java que precisam mapear POJOs para ISO 8583
+- Quando quer annotations (`@Iso8583`, `@IsoField`) em vez de XML
+- Stack moderna com Java Time API (LocalDateTime, YearMonth)
+
+### Licença
+**Apache 2.0** — Livre para uso comercial.
+
+### Maven
+```xml
+<!-- Clone e build local recomendado (Maven Central desatualizado) -->
+<dependency>
+    <groupId>com.github.keyhan</groupId>
+    <artifactId>jbsbe</artifactId>
+    <version>0.0.5</version>
+</dependency>
+```
+
+### Exemplo: POJO anotado como mensagem ISO 8583
+
+```java
+import com.github.keyhan.jbsbe.annotations.Iso8583;
+import com.github.keyhan.jbsbe.annotations.IsoField;
+import com.github.keyhan.jbsbe.annotations.AutoStan;
+
+import java.time.LocalDateTime;
+import java.time.YearMonth;
+
+// POJO anotado — zero boilerplate
+@Iso8583(type = 0x200)
+public class AuthorizationRequest {
+
+    @IsoField(no = 2, type = IsoType.LLVAR, length = 19)
+    private String pan;
+
+    @IsoField(no = 3, type = IsoType.NUMERIC, length = 6)
+    private String processingCode;
+
+    @IsoField(no = 4, type = IsoType.AMOUNT, length = 12)
+    private long amount;
+
+    @IsoField(no = 7, type = IsoType.DATE10)
+    private LocalDateTime transmissionDateTime;   // Java Time API nativo!
+
+    @AutoStan                                      // STAN gerado automaticamente
+    @IsoField(no = 11, type = IsoType.NUMERIC, length = 6)
+    private String stan;
+
+    @IsoField(no = 14, type = IsoType.DATE_EXP)
+    private YearMonth expirationDate;              // YearMonth nativo!
+
+    @IsoField(no = 41, type = IsoType.ALPHA, length = 8)
+    private String terminalId;
+
+    @IsoField(no = 49, type = IsoType.NUMERIC, length = 3)
+    private String currencyCode;
+
+    // getters/setters...
+}
+```
+
+### Exemplo: Usar o POJO anotado
+
+```java
+import com.github.keyhan.jbsbe.I50Factory;
+import com.github.keyhan.jbsbe.I50Message;
+
+public class JbsbeExample {
+
+    public static void main(String[] args) throws Exception {
+        // 1. Criar factory
+        I50Factory factory = new I50Factory();
+
+        // 2. Criar request a partir do POJO anotado
+        AuthorizationRequest auth = new AuthorizationRequest();
+        auth.setPan("4532015112830366");
+        auth.setProcessingCode("003000");
+        auth.setAmount(15000L);
+        auth.setTransmissionDateTime(LocalDateTime.now());
+        auth.setExpirationDate(YearMonth.of(2027, 12));
+        auth.setTerminalId("TERM0001");
+        auth.setCurrencyCode("986");
+
+        // 3. Converter POJO → IsoMessage → bytes
+        I50Message msg = factory.fromPojo(auth);
+        byte[] packed = msg.writeData();
+
+        // 4. Parse: bytes → POJO
+        I50Message parsed = factory.parseMessage(packed, 0);
+        AuthorizationRequest received = factory.toPojo(parsed, AuthorizationRequest.class);
+
+        System.out.println("PAN: " + received.getPan());
+        System.out.println("Amount: " + received.getAmount());
+        System.out.println("STAN: " + received.getStan());  // Gerado automaticamente
+
+        // 5. Pretty-print (mascaramento automático)
+        System.out.println(parsed.prettyPrint());
+    }
+}
+```
+
+### Pros
+- **Annotations Java** — estilo moderno, sem XML
+- **@AutoStan** — geração automática de STAN
+- **Java Time API** — LocalDateTime, YearMonth nativos
+- **Pretty-print** com mascaramento automático
+- Ideal para microservices com DTOs tipados
+- Baseado em j8583 (compatível com todo seu ecossistema)
+
+### Contras
+- Projeto com baixa atividade
+- Maven Central desatualizado (clone + build)
+- Versão 0.0.5 — maturidade limitada
+- Sem networking próprio
+- Comunidade muito pequena
+- Documentação escassa
+
+---
+
+## 7. nucleus8583 — Ultra-Performance e OSGi
+
+### Quando usar
+- Quando performance é prioridade absoluta (claims 4x vs outros)
+- Ambientes OSGi (bundles)
+- Quando footprint mínimo de memória é requisito
+
+### Licença
+**Apache 2.0** — Livre para uso comercial.
+
+### Exemplo: Configuração com notação ISO padrão
+
+```xml
+<!-- nucleus8583 usa notação ISO padrão em vez de classes Java -->
+<message mti="0200">
+    <field no="2"  type="n.."  maxlen="19"/>  <!-- "n.." = numérico variável -->
+    <field no="3"  type="n"    length="6"/>    <!-- "n" = numérico fixo -->
+    <field no="4"  type="n"    length="12"/>
+    <field no="7"  type="n"    length="10"/>
+    <field no="11" type="n"    length="6"/>
+    <field no="22" type="n"    length="3"/>
+    <field no="39" type="an"   length="2"/>    <!-- "an" = alfanumérico -->
+    <field no="41" type="ans"  length="8"/>    <!-- "ans" = alfanumérico + especial -->
+    <field no="48" type="ans.." maxlen="999"/> <!-- "ans.." = variável -->
+</message>
+```
+
+### Exemplo: Parse e criação de mensagens
+
+```java
+import org.nucleus8583.core.Iso8583MessageFactory;
+import org.nucleus8583.core.Iso8583Message;
+
+public class Nucleus8583Example {
+
+    public static void main(String[] args) throws Exception {
+        // 1. Factory a partir de XML com notação ISO
+        Iso8583MessageFactory factory = new Iso8583MessageFactory("iso8583.xml");
+
+        // 2. Criar mensagem
+        Iso8583Message msg = factory.createMessage();
+        msg.setMti(0x200);
+        msg.set(2,  "4532015112830366");
+        msg.set(3,  "003000");
+        msg.set(4,  "000000015000");
+        msg.set(11, "123456");
+        msg.set(41, "TERM0001");
+
+        // 3. Pack (reutiliza buffers internos — zero-alloc)
+        byte[] packed = msg.pack();
+
+        // 4. Unpack
+        Iso8583Message parsed = factory.createMessage();
+        parsed.unpack(packed);
+        System.out.println("MTI: " + parsed.getMti());
+        System.out.println("PAN: " + parsed.getString(2));
+    }
+}
+```
+
+### Pros
+- **Performance 4x superior** (claim do autor vs outros parsers)
+- **Footprint mínimo** — reutilização de objetos, zero-alloc
+- **OSGi bundle** nativo
+- Notação ISO padrão no XML (`n`, `an`, `ans`, `n..`)
+- Apache 2.0
+
+### Contras
+- **Projeto abandonado** — sem atualizações recentes
+- Sem networking
+- Documentação mínima
+- Comunidade inexistente
+- Não recomendado para novos projetos
+- Claims de performance não verificados independentemente
+
+---
+
 ## Decisão: Qual Framework Usar?
 
 ```
@@ -712,8 +911,10 @@ class PaymentRoute extends RouteBuilder {
 | Microsserviço de autorização (fintech) | **jreactive-8583** | Netty + auto-reconnect + Apache 2.0 |
 | Gateway de integração com sistemas legados | **Camel ISO-8583** | EIPs + 300 conectores + Spring Boot |
 | Parsing simples / biblioteca standalone | **j8583** | Leve, sem dependências, Apache 2.0 |
+| Microservices com DTOs tipados | **jBSBE** | Annotations @Iso8583 + Java Time API |
 | App Android / protótipo rápido | **imohsenb** | Builder pattern, MIT, Android-ready |
 | Licença Apache 2.0 é obrigatória | **j8583** ou **jreactive-8583** | jPOS é AGPL |
+| Ultra-low latency / OSGi | **nucleus8583** | Zero-alloc, OSGi bundle (porém inativo) |
 
 ---
 
