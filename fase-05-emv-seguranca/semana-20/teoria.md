@@ -41,7 +41,186 @@ Concatenado:
 | `9F33` | Terminal Capabilities | 3 | O que o terminal suporta |
 | `9F34` | CVM Results | 3 | Como portador foi verificado |
 
-## 3. Fluxo ARQC → ARPC
+## 3. Decode Profundo das Tags Críticas
+
+Essas três tags aparecem em **toda transação chip** e são fundamentais para debugging, investigação de fraude e análise de chargeback.
+
+### TVR — Terminal Verification Results (tag `95`, 5 bytes)
+
+Cada bit indica que o terminal **detectou** aquela condição durante o processamento. Bit `1` = condição presente.
+
+```
+Byte 1 — Offline Data Authentication
+  Bit 8 (0x80): Offline data authentication was not performed
+  Bit 7 (0x40): SDA failed
+  Bit 6 (0x20): ICC data missing
+  Bit 5 (0x10): Card appears on terminal exception file
+  Bit 4 (0x08): DDA failed
+  Bit 3 (0x04): CDA failed
+  Bits 2-1:     RFU
+
+Byte 2 — Application Version / Expiration
+  Bit 8 (0x80): ICC and terminal have different application versions
+  Bit 7 (0x40): Expired application
+  Bit 6 (0x20): Application not yet effective
+  Bit 5 (0x10): Requested service not allowed for card product
+  Bit 4 (0x08): New card
+  Bits 3-1:     RFU
+
+Byte 3 — Cardholder Verification
+  Bit 8 (0x80): Cardholder verification was not successful
+  Bit 7 (0x40): Unrecognised CVM
+  Bit 6 (0x20): PIN Try Limit exceeded
+  Bit 5 (0x10): PIN entry required and PIN pad not present or not working
+  Bit 4 (0x08): PIN entry required, PIN pad present, but PIN was not entered
+  Bit 3 (0x04): Online PIN entered
+  Bits 2-1:     RFU
+
+Byte 4 — Terminal Risk Management
+  Bit 8 (0x80): Transaction exceeds floor limit
+  Bit 7 (0x40): Lower consecutive offline limit exceeded
+  Bit 6 (0x20): Upper consecutive offline limit exceeded
+  Bit 5 (0x10): Transaction selected randomly for online processing
+  Bit 4 (0x08): Merchant forced transaction online
+  Bits 3-1:     RFU
+
+Byte 5 — Script / Issuer Authentication
+  Bit 8 (0x80): Default TDOL used
+  Bit 7 (0x40): Issuer authentication failed
+  Bit 6 (0x20): Script processing failed before final GENERATE AC
+  Bit 5 (0x10): Script processing failed after final GENERATE AC
+  Bits 4-1:     RFU
+```
+
+**Exemplo de decode:** TVR = `00 80 04 00 00`
+```
+Byte 1 (00): sem falhas na autenticação offline
+Byte 2 (80): bit 8 → versões diferentes entre terminal e chip — comum, geralmente inócuo
+Byte 3 (04): bit 3 → CDA failed — chip tentou Combined DDA mas terminal não suportou
+Byte 4 (00): sem questões de risco
+Byte 5 (00): sem falhas de script
+```
+
+**Sinais de alerta em investigações:**
+- `xx 40 xx xx xx` (byte 2, bit 7): aplicação expirada — portador com cartão vencido ou fallback
+- `xx xx 20 xx xx` (byte 3, bit 6): PIN Try Limit exceeded — possível tentativa de força bruta
+- `xx xx 80 xx xx` (byte 3, bit 8): CVM failed — PIN digitado errado mas transação aprovada offline
+
+---
+
+### AIP — Application Interchange Profile (tag `82`, 2 bytes)
+
+Declara o que o **chip suporta** (capacidades do cartão, não do terminal):
+
+```
+Byte 1:
+  Bit 8 (0x80): RFU
+  Bit 7 (0x40): SDA supported
+  Bit 6 (0x20): DDA supported
+  Bit 5 (0x10): Cardholder verification supported
+  Bit 4 (0x08): Terminal risk management to be performed
+  Bit 3 (0x04): Issuer authentication supported
+  Bit 2 (0x02): On-device cardholder verification supported (contactless)
+  Bit 1 (0x01): CDA supported
+
+Byte 2: RFU (geralmente 0x00)
+```
+
+**Exemplo — cartão de débito padrão:** AIP = `5C 00`
+```
+5C = 0101 1100
+  Bit 7 (0x40): SDA supported ✓
+  Bit 5 (0x10): Cardholder verification supported ✓
+  Bit 4 (0x08): Terminal risk management ✓
+  Bit 3 (0x04): Issuer authentication supported ✓
+→ Suporta SDA, PIN e auth online. Não suporta DDA/CDA.
+```
+
+**Exemplo — cartão premium com contactless:** AIP = `7E 00`
+```
+7E = 0111 1110
+  Adiciona bit 6 (0x20): DDA supported ✓
+  Adiciona bit 2 (0x02): On-device CVM supported ✓ (ex: biometria no celular)
+→ Cartão mais seguro; DDA impede clonagem, on-device CVM habilita biometria.
+```
+
+---
+
+### CVM Results — Cardholder Verification Method Results (tag `9F34`, 3 bytes)
+
+Indica **como** o portador foi verificado e qual foi o resultado:
+
+```
+Byte 1 — Método usado (CVM Code):
+  0x00: Fail / No CVM
+  0x01: Plaintext PIN verificado pelo chip (offline)
+  0x02: Online Enciphered PIN (PIN enviado criptografado ao emissor)
+  0x03: Plaintext PIN offline + Signature
+  0x04: Enciphered PIN verificado pelo chip (offline)
+  0x1E: Signature (papel)
+  0x1F: No CVM required (valor abaixo do floor limit)
+  0x3F: No CVM performed
+
+Byte 2 — Condição de aplicação (CVM Condition):
+  0x00: Always
+  0x03: If terminal supports the CVM
+  0x04: If manual cash
+  0x06: If not unattended cash and not manual cash
+
+Byte 3 — Resultado:
+  0x00: Unknown
+  0x01: Failed
+  0x02: Successful
+```
+
+| Cenário | CVM Results | Significado |
+|---------|-------------|-------------|
+| PIN online aprovado | `02 00 02` | Online PIN, sempre, sucesso |
+| PIN offline aprovado | `04 00 02` | Enciphered PIN no chip, sucesso |
+| Assinatura | `1E 00 02` | Signature, sempre, sucesso |
+| Contactless valor baixo | `1F 03 02` | No CVM required, se terminal suportar, sucesso |
+| PIN errado (fallback assinatura) | `02 00 01` + `1E 00 02` | PIN falhou, usou assinatura |
+
+---
+
+### Exemplo Completo: Parse de um DE 55 Real
+
+```
+DE 55 (compra chip Visa, R$ 50,00 — hex bruto):
+9F2608A1B2C3D4E5F607189F2701808202
+5C009F100706010A03A0B8009F37041234
+5678 9F360200A5950500800400009A0326
+03159C01009F02060000000050009F1A02
+00765F2A020986 8407A0000000031010
+9F3303E0F8C89F34030200 02
+
+Parse tag a tag:
+  Tag 9F26 (08): A1B2C3D4E5F60718  → ARQC: criptograma de autenticação do chip
+  Tag 9F27 (01): 80                 → CID: 80 = ARQC (solicitando auth online)
+  Tag 82   (02): 5C00               → AIP: SDA + CV + TermRisk + IssuerAuth
+  Tag 9F10 (07): 06010A03A0B800     → IAD: dados proprietários do emissor
+  Tag 9F37 (04): 12345678           → Unpredictable Number (anti-replay)
+  Tag 9F36 (02): 00A5               → ATC: 165 (165ª transação deste cartão)
+  Tag 95   (05): 0080040000         → TVR: byte2=80 (diff version), byte3=04 (CDA failed)
+  Tag 9A   (03): 260315             → Data: 2026-03-15
+  Tag 9C   (01): 00                 → Tipo: 00 = compra
+  Tag 9F02 (06): 000000005000       → Valor: R$ 50,00 (BCD, em centavos)
+  Tag 9F1A (02): 0076               → País do terminal: 076 = Brasil
+  Tag 5F2A (02): 0986               → Moeda: 0986 = BRL
+  Tag 84   (07): A0000000031010     → AID: Visa Credit
+  Tag 9F33 (03): E0F8C8             → Terminal Capabilities
+  Tag 9F34 (03): 020002             → CVM: Online PIN, sempre, sucesso ✓
+
+O que esse DE 55 revela:
+  - ATC 165: cartão ativo, histórico razoável de uso
+  - TVR byte 3 = 04 (CDA failed): chip usou SDA como fallback → risco levemente elevado
+  - CVM Online PIN Successful: PIN foi validado pelo emissor, não pelo chip
+  - ARQC presente: autenticação legítima do chip para esta transação específica
+```
+
+---
+
+## 4. Fluxo ARQC → ARPC
 
 ```
 1. Chip calcula ARQC (criptograma de request) usando:
@@ -63,7 +242,7 @@ Concatenado:
    - Se falha → gera AAC = transação rejeitada pelo chip
 ```
 
-## 4. Parser TLV em Java
+## 5. Parser TLV em Java
 
 ```java
 public class TLVParser {
@@ -109,12 +288,162 @@ public class TLVParser {
 }
 ```
 
-## 5. Exercícios Semana 17
+## 6. Exercícios Semana 17
 
 1. **Implemente TLVParser** completo com testes
 2. **Parse um DE 55 real** (use dados de exemplo) e identifique cada tag
 3. **Implemente `DE55Analyzer`** que extrai e explica: tipo de criptograma, ATC, data, CVM usado
 4. **Diferencie chip de fallback:** quando DE22=051 vs DE22=801, o que muda no DE55?
+
+### DE55Analyzer — Implementação completa
+
+```java
+public class DE55Analyzer {
+
+    private final TLVParser parser = new TLVParser();
+
+    /** Resultado da análise do DE55 */
+    public record DE55Analysis(
+        String cryptogramType,   // ARQC, TC, AAC
+        String atc,              // Application Transaction Counter
+        String txnDate,          // Data da transação (tag 9A)
+        String cvmUsed,          // Método de verificação do portador
+        String tvr,              // Terminal Verification Results (hex)
+        String aip,              // Application Interchange Profile (hex)
+        boolean sdaFailed,       // True se SDA/DDA falhou
+        boolean cvmFailed,       // True se CVM falhou
+        boolean isContactless,   // Inferido pelo AIP
+        List<String> warnings    // Avisos de segurança
+    ) {}
+
+    public DE55Analysis analyze(byte[] de55Data, String de22) {
+        Map<String, byte[]> tags = parser.parse(de55Data);
+        List<String> warnings = new ArrayList<>();
+
+        // ── Tipo de criptograma (tag 9F27) ──────────────────────────────────
+        byte[] cryptoInfo = tags.get("9F27");
+        String cryptogramType = "UNKNOWN";
+        if (cryptoInfo != null && cryptoInfo.length > 0) {
+            int ci = cryptoInfo[0] & 0xC0; // bits 7-6
+            cryptogramType = switch (ci) {
+                case 0x00 -> "AAC";   // Authorization rejected — offline declined
+                case 0x40 -> "TC";    // Transaction Certificate — offline approved
+                case 0x80 -> "ARQC";  // Authorization Request Cryptogram — online
+                default   -> "RFU";
+            };
+        }
+        if ("AAC".equals(cryptogramType)) {
+            warnings.add("CHIP_DECLINED_OFFLINE: cartão recusou a transação offline (AAC)");
+        }
+
+        // ── ATC (tag 9F36) ──────────────────────────────────────────────────
+        byte[] atcBytes = tags.get("9F36");
+        String atc = atcBytes != null ? HexUtils.bytesToHex(atcBytes) : "N/A";
+
+        // ── Data da transação (tag 9A) ───────────────────────────────────────
+        byte[] dateBytes = tags.get("9A");
+        String txnDate = dateBytes != null
+            ? BcdUtils.bcdToString(dateBytes, dateBytes.length * 2)
+            : "N/A";
+
+        // ── TVR (tag 95) ─────────────────────────────────────────────────────
+        byte[] tvrBytes = tags.get("95");
+        String tvr = tvrBytes != null ? HexUtils.bytesToHex(tvrBytes) : "N/A";
+        boolean sdaFailed = false;
+        boolean cvmFailed = false;
+        if (tvrBytes != null && tvrBytes.length >= 1) {
+            sdaFailed = (tvrBytes[0] & 0x01) != 0; // byte1 bit1: Offline data auth failed
+            if (tvrBytes.length >= 3) {
+                cvmFailed = (tvrBytes[2] & 0x08) != 0; // byte3 bit4: CVM failed
+            }
+        }
+        if (sdaFailed) warnings.add("OFFLINE_DATA_AUTH_FAILED: risco elevado, possível clone");
+        if (cvmFailed) warnings.add("CVM_FAILED: método de verificação falhou");
+
+        // ── AIP (tag 82) ─────────────────────────────────────────────────────
+        byte[] aipBytes = tags.get("82");
+        String aip = aipBytes != null ? HexUtils.bytesToHex(aipBytes) : "N/A";
+        boolean isContactless = false;
+        if (aipBytes != null && aipBytes.length >= 1) {
+            isContactless = (aipBytes[0] & 0x20) != 0; // bit6: on-device CVM supported
+        }
+        // Também inferir pelo DE22
+        if (de22 != null && (de22.startsWith("07") || de22.startsWith("91"))) {
+            isContactless = true;
+        }
+
+        // ── CVM Results (tag 9F34) ────────────────────────────────────────────
+        byte[] cvmBytes = tags.get("9F34");
+        String cvmUsed = "UNKNOWN";
+        if (cvmBytes != null && cvmBytes.length >= 1) {
+            int method = cvmBytes[0] & 0x3F;
+            cvmUsed = switch (method) {
+                case 0x00 -> "Fail/No CVM";
+                case 0x01 -> "Offline Plaintext PIN";
+                case 0x02 -> "Online Encrypted PIN";
+                case 0x03 -> "Online Encrypted PIN + Signature";
+                case 0x04 -> "Offline Encrypted PIN";
+                case 0x05 -> "Offline Encrypted PIN + Signature";
+                case 0x1E -> "Signature";
+                case 0x1F -> "No CVM required";
+                case 0x3F -> "No CVM performed";
+                default   -> String.format("Unknown(0x%02X)", method);
+            };
+            if (cvmBytes.length >= 3) {
+                int result = cvmBytes[2] & 0xFF;
+                if (result != 0x02) {
+                    warnings.add("CVM_RESULT_NOT_SUCCESSFUL: byte3=" +
+                                 String.format("%02X", result));
+                }
+            }
+        }
+
+        // ── Verificações cruzadas ─────────────────────────────────────────────
+        if ("ARQC".equals(cryptogramType) && "No CVM required".equals(cvmUsed)) {
+            // OK para contactless abaixo do floor limit
+        }
+        if ("TC".equals(cryptogramType)) {
+            warnings.add("OFFLINE_TC: aprovação offline — não há garantia do emissor online");
+        }
+
+        return new DE55Analysis(cryptogramType, atc, txnDate, cvmUsed,
+                                tvr, aip, sdaFailed, cvmFailed,
+                                isContactless, Collections.unmodifiableList(warnings));
+    }
+
+    /** Resumo legível para logs/debugging */
+    public String summarize(DE55Analysis a) {
+        return String.format(
+            "DE55[crypto=%s atc=%s date=%s cvm=%s tvr=%s aip=%s contactless=%b sdaFail=%b cvmFail=%b warnings=%s]",
+            a.cryptogramType(), a.atc(), a.txnDate(), a.cvmUsed(),
+            a.tvr(), a.aip(), a.isContactless(),
+            a.sdaFailed(), a.cvmFailed(), a.warnings()
+        );
+    }
+}
+```
+
+**Uso no participant:**
+
+```java
+// Dentro do prepare() do ValidateEMV participant
+if (msg.hasField(55)) {
+    byte[] de55 = msg.getBytes(55);
+    DE55Analyzer.DE55Analysis emv = analyzer.analyze(de55, msg.getString(22));
+
+    if ("AAC".equals(emv.cryptogramType())) {
+        // Chip recusou offline — não deve autorizar
+        ctx.put("RESPONSE_CODE", "05");
+        return ABORTED;
+    }
+    if (emv.sdaFailed()) {
+        // Risco de clone — acionar regras anti-fraude extras
+        ctx.put("EMV_RISK_FLAG", "SDA_FAILED");
+    }
+    emv.warnings().forEach(w -> log.warn("EMV_WARNING {} STAN={}", w, stan));
+    ctx.put("EMV_ANALYSIS", emv);
+}
+```
 
 ### Desafio
 Receba dois dumps de DE 55 — um de transação chip e um de contactless. Compare tag a tag e documente as diferenças.

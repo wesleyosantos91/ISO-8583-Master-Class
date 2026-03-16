@@ -22,37 +22,83 @@
 
 ```java
 public class ReversalBuilder {
-    
+
+    private final AtomicLong stanCounter = new AtomicLong(0);
+
     public ISOMsg buildReversal(ISOMsg originalAuth) throws ISOException {
         ISOMsg reversal = new ISOMsg();
         reversal.setPackager(originalAuth.getPackager());
         reversal.setMTI("0400");
-        
+
         // Copiar campos da transação original
         copyField(originalAuth, reversal, 2);   // PAN
         copyField(originalAuth, reversal, 3);   // Processing Code
         copyField(originalAuth, reversal, 4);   // Amount
-        reversal.set(7, currentDateTime());      // NOVA data/hora
-        reversal.set(11, generateSTAN());        // NOVO STAN
+        reversal.set(7, currentDateTime());      // NOVA data/hora (não a original)
+        reversal.set(11, generateSTAN());        // NOVO STAN (não o original)
         copyField(originalAuth, reversal, 12);  // Local time original
         copyField(originalAuth, reversal, 13);  // Local date original
         copyField(originalAuth, reversal, 22);  // POS Entry Mode
         copyField(originalAuth, reversal, 25);  // POS Condition Code
         copyField(originalAuth, reversal, 32);  // Acquiring ID
+        copyField(originalAuth, reversal, 37);  // RRN original
         copyField(originalAuth, reversal, 41);  // Terminal ID
         copyField(originalAuth, reversal, 42);  // Merchant ID
         copyField(originalAuth, reversal, 49);  // Currency
-        
-        // DE 90 — Original Data Elements (42 chars, fixo)
-        // MTI(4) + STAN(6) + DateTime(10) + AcqID(11) + FwdID(11)
+
+        // DE 90 — Original Data Elements (42 chars fixo)
+        // Formato: MTI(4) + STAN(6) + DateTime(10) + AcqID(11) + FwdInstID(11)
         String de90 = originalAuth.getMTI()
-            + originalAuth.getString(11)         // STAN original
-            + originalAuth.getString(7)          // DateTime original
-            + padLeft(getOrDefault(originalAuth, 32, "0"), 11, '0')
-            + padLeft("0", 11, '0');            // Forward ID (se houver)
+            + originalAuth.getString(11)                              // STAN original
+            + originalAuth.getString(7)                               // DateTime original
+            + padLeft(getOrDefault(originalAuth, 32, "0"), 11, '0')  // Acquiring ID
+            + padLeft("0", 11, '0');                                  // Forwarding ID
         reversal.set(90, de90);
-        
+
         return reversal;
+    }
+
+    // ── Métodos auxiliares ─────────────────────────────────────────────────────
+
+    /** Copia DE da mensagem origem para destino, somente se presente */
+    private void copyField(ISOMsg src, ISOMsg dst, int de) throws ISOException {
+        if (src.hasField(de)) {
+            dst.set(de, src.getString(de));
+        }
+    }
+
+    /**
+     * Padding à esquerda com um caractere específico.
+     * Ex: padLeft("123", 6, '0') → "000123"
+     * Se str for mais longa que width, trunca pela DIREITA (pega os últimos 'width' chars).
+     */
+    private String padLeft(String str, int width, char padChar) {
+        if (str == null) str = "";
+        if (str.length() >= width) return str.substring(str.length() - width);
+        StringBuilder sb = new StringBuilder(width);
+        for (int i = str.length(); i < width; i++) sb.append(padChar);
+        sb.append(str);
+        return sb.toString();
+    }
+
+    /** Retorna valor do DE ou defaultVal se ausente */
+    private String getOrDefault(ISOMsg msg, int de, String defaultVal) {
+        try {
+            return msg.hasField(de) ? msg.getString(de) : defaultVal;
+        } catch (ISOException e) {
+            return defaultVal;
+        }
+    }
+
+    /** Data/hora atual no formato MMDDhhmmss (10 dígitos) */
+    private String currentDateTime() {
+        return DateTimeFormatter.ofPattern("MMddHHmmss")
+                                .format(LocalDateTime.now());
+    }
+
+    /** Gera STAN sequencial com rollover em 999999 */
+    private String generateSTAN() {
+        return String.format("%06d", stanCounter.incrementAndGet() % 1_000_000);
     }
 }
 ```
@@ -107,13 +153,60 @@ public class AutoReversalEngine implements TransactionParticipant {
 }
 ```
 
-## 4. Exercícios Semana 13
+## 4. Timing Diagram — Timeout e Auto-Reversal
+
+O diagrama abaixo mostra os exatos instantes em que cada evento ocorre, incluindo os casos de late response e double failure:
+
+```mermaid
+sequenceDiagram
+    participant POS as Terminal POS
+    participant SW as Switch
+    participant ISS as Emissor
+
+    POS->>SW: 0200 Financial Request (t=0)
+    SW->>ISS: 0100 Authorization Request (t=0)
+
+    Note over SW: Timer iniciado (ex: 30s)
+
+    alt Fluxo normal - resposta a tempo
+        ISS-->>SW: 0110 Response DE39=00 (t=2s)
+        SW-->>POS: 0210 Response DE39=00
+        Note over POS,ISS: Transacao aprovada
+    else Timeout - emissor nao respondeu
+        Note over SW: t=30s - TIMEOUT
+        SW-->>POS: 0210 DE39=68 (Response Received Too Late)
+        Note over SW: NEEDS_REVERSAL = true
+        SW->>ISS: 0400 Reversal Request (t=30s)
+        ISS-->>SW: 0410 DE39=00 (t=32s)
+        Note over POS,ISS: Transacao revertida com sucesso
+    else Late Response - resposta chega apos timeout
+        Note over SW: t=30s - TIMEOUT
+        SW-->>POS: 0210 DE39=68
+        SW->>ISS: 0400 Reversal Request (t=30s)
+        ISS-->>SW: 0110 DE39=00 (t=31s - LATE)
+        Note over SW: Ignora late response, ja enviou reversal
+        ISS-->>SW: 0410 DE39=00 (t=33s)
+        Note over POS,ISS: Reversal confirmado
+    else Double Failure - reversal tambem falha
+        Note over SW: t=30s - TIMEOUT
+        SW->>ISS: 0400 Reversal Request (t=30s)
+        Note over SW: t=60s - REVERSAL TIMEOUT
+        SW->>ISS: 0400 Reversal Retry 1 (t=75s)
+        Note over SW: t=105s - REVERSAL TIMEOUT
+        SW->>ISS: 0400 Reversal Retry 2 (t=135s)
+        Note over SW: t=165s - REVERSAL TIMEOUT
+        Note over SW: ALERTA CRITICO - intervencao manual
+    end
+```
+
+## 5. Exercícios Semana 13
 
 1. **Implemente `ReversalBuilder`** com DE 90 montado corretamente
 2. **Implemente `AutoReversalEngine`** com retry e backoff
 3. **Teste:** auth timeout → reversal automático → response 00
 4. **Teste:** auth timeout → reversal → emissor diz "76" (não encontrou) → OK
 5. **Teste:** reversal que também dá timeout → retry
+6. **Implemente persistência do reversal pendente** — o que acontece se o switch reiniciar antes do reversal ser confirmado? Use uma fila persistente (banco de dados ou arquivo) para que os reversals pendentes sobrevivam a um restart.
 
 ### Desafio
 Simule: 0200 enviado, timeout, auto-reversal enviado... e **nesse momento** a response original (0210, DE39=00) chega (late response). O que fazer? Implemente a lógica e documente a decisão.
@@ -154,6 +247,78 @@ Conexão restaurada:
   POS → Host: 0220 (advice 3)
   Host → POS: 0230 (confirmação)
 ```
+
+### 2.1 SAF no lado do switch (host-to-host)
+
+O mesmo princípio se aplica entre o switch do adquirente e a bandeira. Se a conexão com a bandeira cair, o switch pode processar offline (stand-in) e enviar os advices em batch quando reconectar.
+
+```java
+public class SafQueue {
+
+    private final BlockingDeque<SafEntry> queue;
+    private final Path persistenceFile; // garante sobrevivência a restart
+
+    public record SafEntry(ISOMsg advice, int retries, Instant enqueuedAt) {}
+
+    public void enqueue(ISOMsg advice) {
+        SafEntry entry = new SafEntry(advice, 0, Instant.now());
+        queue.addLast(entry);
+        persist(entry); // grava em disco imediatamente
+    }
+
+    /**
+     * Drenagem após reconexão — chamada pelo ChannelHealthCheck
+     * quando canal volta a ficar UP.
+     */
+    public void drain(MUX mux) {
+        while (!queue.isEmpty()) {
+            SafEntry entry = queue.peekFirst();
+
+            // Descarta advices muito antigos (risco de inconsistência)
+            if (Duration.between(entry.enqueuedAt(), Instant.now()).toHours() > 24) {
+                queue.pollFirst();
+                alertOperations("SAF_EXPIRED", entry.advice());
+                continue;
+            }
+
+            try {
+                ISOMsg response = mux.request(entry.advice(), 30_000);
+                if (response != null && "00".equals(response.getString(39))) {
+                    queue.pollFirst();
+                    removePersisted(entry);
+                } else {
+                    // Backoff e retry
+                    requeue(entry);
+                    break;
+                }
+            } catch (Exception e) {
+                requeue(entry);
+                break;
+            }
+        }
+    }
+
+    private void requeue(SafEntry entry) {
+        if (entry.retries() < 3) {
+            queue.pollFirst();
+            queue.addFirst(new SafEntry(entry.advice(), entry.retries() + 1, entry.enqueuedAt()));
+        } else {
+            // Desistiu após 3 tentativas — intervenção manual
+            queue.pollFirst();
+            alertOperations("SAF_EXHAUSTED", entry.advice());
+        }
+    }
+}
+```
+
+### 2.2 Limites e riscos do SAF
+
+| Risco | Mitigação |
+|-------|-----------|
+| Transação SAF chega após clearing já fechado | Timestamp de enqueue — descartar se > 23h |
+| Portador contestar (chargeback) transação SAF não confirmada | Log de SAF com status é evidência |
+| SAF enviado em duplicata após reconexão | Deduplicação por STAN + Terminal + Data |
+| Queue SAF cresendo indefinidamente | Alerta quando queue > N itens; descarte por TTL |
 
 ## 3. Retransmissão vs Duplicata
 

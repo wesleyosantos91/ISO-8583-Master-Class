@@ -295,6 +295,156 @@ public class TLVParser {
 3. **Implemente `DE55Analyzer`** que extrai e explica: tipo de criptograma, ATC, data, CVM usado
 4. **Diferencie chip de fallback:** quando DE22=051 vs DE22=801, o que muda no DE55?
 
+### DE55Analyzer — Implementação completa
+
+```java
+public class DE55Analyzer {
+
+    private final TLVParser parser = new TLVParser();
+
+    /** Resultado da análise do DE55 */
+    public record DE55Analysis(
+        String cryptogramType,   // ARQC, TC, AAC
+        String atc,              // Application Transaction Counter
+        String txnDate,          // Data da transação (tag 9A)
+        String cvmUsed,          // Método de verificação do portador
+        String tvr,              // Terminal Verification Results (hex)
+        String aip,              // Application Interchange Profile (hex)
+        boolean sdaFailed,       // True se SDA/DDA falhou
+        boolean cvmFailed,       // True se CVM falhou
+        boolean isContactless,   // Inferido pelo AIP
+        List<String> warnings    // Avisos de segurança
+    ) {}
+
+    public DE55Analysis analyze(byte[] de55Data, String de22) {
+        Map<String, byte[]> tags = parser.parse(de55Data);
+        List<String> warnings = new ArrayList<>();
+
+        // ── Tipo de criptograma (tag 9F27) ──────────────────────────────────
+        byte[] cryptoInfo = tags.get("9F27");
+        String cryptogramType = "UNKNOWN";
+        if (cryptoInfo != null && cryptoInfo.length > 0) {
+            int ci = cryptoInfo[0] & 0xC0; // bits 7-6
+            cryptogramType = switch (ci) {
+                case 0x00 -> "AAC";   // Authorization rejected — offline declined
+                case 0x40 -> "TC";    // Transaction Certificate — offline approved
+                case 0x80 -> "ARQC";  // Authorization Request Cryptogram — online
+                default   -> "RFU";
+            };
+        }
+        if ("AAC".equals(cryptogramType)) {
+            warnings.add("CHIP_DECLINED_OFFLINE: cartão recusou a transação offline (AAC)");
+        }
+
+        // ── ATC (tag 9F36) ──────────────────────────────────────────────────
+        byte[] atcBytes = tags.get("9F36");
+        String atc = atcBytes != null ? HexUtils.bytesToHex(atcBytes) : "N/A";
+
+        // ── Data da transação (tag 9A) ───────────────────────────────────────
+        byte[] dateBytes = tags.get("9A");
+        String txnDate = dateBytes != null
+            ? BcdUtils.bcdToString(dateBytes, dateBytes.length * 2)
+            : "N/A";
+
+        // ── TVR (tag 95) ─────────────────────────────────────────────────────
+        byte[] tvrBytes = tags.get("95");
+        String tvr = tvrBytes != null ? HexUtils.bytesToHex(tvrBytes) : "N/A";
+        boolean sdaFailed = false;
+        boolean cvmFailed = false;
+        if (tvrBytes != null && tvrBytes.length >= 1) {
+            sdaFailed = (tvrBytes[0] & 0x01) != 0; // byte1 bit1: Offline data auth failed
+            if (tvrBytes.length >= 3) {
+                cvmFailed = (tvrBytes[2] & 0x08) != 0; // byte3 bit4: CVM failed
+            }
+        }
+        if (sdaFailed) warnings.add("OFFLINE_DATA_AUTH_FAILED: risco elevado, possível clone");
+        if (cvmFailed) warnings.add("CVM_FAILED: método de verificação falhou");
+
+        // ── AIP (tag 82) ─────────────────────────────────────────────────────
+        byte[] aipBytes = tags.get("82");
+        String aip = aipBytes != null ? HexUtils.bytesToHex(aipBytes) : "N/A";
+        boolean isContactless = false;
+        if (aipBytes != null && aipBytes.length >= 1) {
+            isContactless = (aipBytes[0] & 0x20) != 0; // bit6: on-device CVM supported
+        }
+        // Também inferir pelo DE22
+        if (de22 != null && (de22.startsWith("07") || de22.startsWith("91"))) {
+            isContactless = true;
+        }
+
+        // ── CVM Results (tag 9F34) ────────────────────────────────────────────
+        byte[] cvmBytes = tags.get("9F34");
+        String cvmUsed = "UNKNOWN";
+        if (cvmBytes != null && cvmBytes.length >= 1) {
+            int method = cvmBytes[0] & 0x3F;
+            cvmUsed = switch (method) {
+                case 0x00 -> "Fail/No CVM";
+                case 0x01 -> "Offline Plaintext PIN";
+                case 0x02 -> "Online Encrypted PIN";
+                case 0x03 -> "Online Encrypted PIN + Signature";
+                case 0x04 -> "Offline Encrypted PIN";
+                case 0x05 -> "Offline Encrypted PIN + Signature";
+                case 0x1E -> "Signature";
+                case 0x1F -> "No CVM required";
+                case 0x3F -> "No CVM performed";
+                default   -> String.format("Unknown(0x%02X)", method);
+            };
+            if (cvmBytes.length >= 3) {
+                int result = cvmBytes[2] & 0xFF;
+                if (result != 0x02) {
+                    warnings.add("CVM_RESULT_NOT_SUCCESSFUL: byte3=" +
+                                 String.format("%02X", result));
+                }
+            }
+        }
+
+        // ── Verificações cruzadas ─────────────────────────────────────────────
+        if ("ARQC".equals(cryptogramType) && "No CVM required".equals(cvmUsed)) {
+            // OK para contactless abaixo do floor limit
+        }
+        if ("TC".equals(cryptogramType)) {
+            warnings.add("OFFLINE_TC: aprovação offline — não há garantia do emissor online");
+        }
+
+        return new DE55Analysis(cryptogramType, atc, txnDate, cvmUsed,
+                                tvr, aip, sdaFailed, cvmFailed,
+                                isContactless, Collections.unmodifiableList(warnings));
+    }
+
+    /** Resumo legível para logs/debugging */
+    public String summarize(DE55Analysis a) {
+        return String.format(
+            "DE55[crypto=%s atc=%s date=%s cvm=%s tvr=%s aip=%s contactless=%b sdaFail=%b cvmFail=%b warnings=%s]",
+            a.cryptogramType(), a.atc(), a.txnDate(), a.cvmUsed(),
+            a.tvr(), a.aip(), a.isContactless(),
+            a.sdaFailed(), a.cvmFailed(), a.warnings()
+        );
+    }
+}
+```
+
+**Uso no participant:**
+
+```java
+// Dentro do prepare() do ValidateEMV participant
+if (msg.hasField(55)) {
+    byte[] de55 = msg.getBytes(55);
+    DE55Analyzer.DE55Analysis emv = analyzer.analyze(de55, msg.getString(22));
+
+    if ("AAC".equals(emv.cryptogramType())) {
+        // Chip recusou offline — não deve autorizar
+        ctx.put("RESPONSE_CODE", "05");
+        return ABORTED;
+    }
+    if (emv.sdaFailed()) {
+        // Risco de clone — acionar regras anti-fraude extras
+        ctx.put("EMV_RISK_FLAG", "SDA_FAILED");
+    }
+    emv.warnings().forEach(w -> log.warn("EMV_WARNING {} STAN={}", w, stan));
+    ctx.put("EMV_ANALYSIS", emv);
+}
+```
+
 ### Desafio
 Receba dois dumps de DE 55 — um de transação chip e um de contactless. Compare tag a tag e documente as diferenças.
 

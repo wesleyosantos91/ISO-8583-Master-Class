@@ -22,37 +22,83 @@
 
 ```java
 public class ReversalBuilder {
-    
+
+    private final AtomicLong stanCounter = new AtomicLong(0);
+
     public ISOMsg buildReversal(ISOMsg originalAuth) throws ISOException {
         ISOMsg reversal = new ISOMsg();
         reversal.setPackager(originalAuth.getPackager());
         reversal.setMTI("0400");
-        
+
         // Copiar campos da transação original
         copyField(originalAuth, reversal, 2);   // PAN
         copyField(originalAuth, reversal, 3);   // Processing Code
         copyField(originalAuth, reversal, 4);   // Amount
-        reversal.set(7, currentDateTime());      // NOVA data/hora
-        reversal.set(11, generateSTAN());        // NOVO STAN
+        reversal.set(7, currentDateTime());      // NOVA data/hora (não a original)
+        reversal.set(11, generateSTAN());        // NOVO STAN (não o original)
         copyField(originalAuth, reversal, 12);  // Local time original
         copyField(originalAuth, reversal, 13);  // Local date original
         copyField(originalAuth, reversal, 22);  // POS Entry Mode
         copyField(originalAuth, reversal, 25);  // POS Condition Code
         copyField(originalAuth, reversal, 32);  // Acquiring ID
+        copyField(originalAuth, reversal, 37);  // RRN original
         copyField(originalAuth, reversal, 41);  // Terminal ID
         copyField(originalAuth, reversal, 42);  // Merchant ID
         copyField(originalAuth, reversal, 49);  // Currency
-        
-        // DE 90 — Original Data Elements (42 chars, fixo)
-        // MTI(4) + STAN(6) + DateTime(10) + AcqID(11) + FwdID(11)
+
+        // DE 90 — Original Data Elements (42 chars fixo)
+        // Formato: MTI(4) + STAN(6) + DateTime(10) + AcqID(11) + FwdInstID(11)
         String de90 = originalAuth.getMTI()
-            + originalAuth.getString(11)         // STAN original
-            + originalAuth.getString(7)          // DateTime original
-            + padLeft(getOrDefault(originalAuth, 32, "0"), 11, '0')
-            + padLeft("0", 11, '0');            // Forward ID (se houver)
+            + originalAuth.getString(11)                              // STAN original
+            + originalAuth.getString(7)                               // DateTime original
+            + padLeft(getOrDefault(originalAuth, 32, "0"), 11, '0')  // Acquiring ID
+            + padLeft("0", 11, '0');                                  // Forwarding ID
         reversal.set(90, de90);
-        
+
         return reversal;
+    }
+
+    // ── Métodos auxiliares ─────────────────────────────────────────────────────
+
+    /** Copia DE da mensagem origem para destino, somente se presente */
+    private void copyField(ISOMsg src, ISOMsg dst, int de) throws ISOException {
+        if (src.hasField(de)) {
+            dst.set(de, src.getString(de));
+        }
+    }
+
+    /**
+     * Padding à esquerda com um caractere específico.
+     * Ex: padLeft("123", 6, '0') → "000123"
+     * Se str for mais longa que width, trunca pela DIREITA (pega os últimos 'width' chars).
+     */
+    private String padLeft(String str, int width, char padChar) {
+        if (str == null) str = "";
+        if (str.length() >= width) return str.substring(str.length() - width);
+        StringBuilder sb = new StringBuilder(width);
+        for (int i = str.length(); i < width; i++) sb.append(padChar);
+        sb.append(str);
+        return sb.toString();
+    }
+
+    /** Retorna valor do DE ou defaultVal se ausente */
+    private String getOrDefault(ISOMsg msg, int de, String defaultVal) {
+        try {
+            return msg.hasField(de) ? msg.getString(de) : defaultVal;
+        } catch (ISOException e) {
+            return defaultVal;
+        }
+    }
+
+    /** Data/hora atual no formato MMDDhhmmss (10 dígitos) */
+    private String currentDateTime() {
+        return DateTimeFormatter.ofPattern("MMddHHmmss")
+                                .format(LocalDateTime.now());
+    }
+
+    /** Gera STAN sequencial com rollover em 999999 */
+    private String generateSTAN() {
+        return String.format("%06d", stanCounter.incrementAndGet() % 1_000_000);
     }
 }
 ```
