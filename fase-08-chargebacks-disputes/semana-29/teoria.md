@@ -354,3 +354,152 @@ Logs de transação devem ser imutáveis (append-only) e retidos pelo prazo regu
 | Chargeback ratio | Visa: alerta em 0.65%; Mastercard: alerta em 1.5% |
 | Impacto técnico | RRN como chave de rastreio, DE 90, retenção 13 meses |
 | Friendly fraud | Portador realizou mas contesta — defensável com evidências |
+
+---
+
+## Exercícios Semana 29
+
+### Exercício 1 — Classificação de Reason Codes
+
+Para cada cenário abaixo, indique o reason code Visa mais adequado e justifique:
+
+a) Portador fez compra online, produto nunca chegou, tentou resolver com merchant sem sucesso
+b) Cartão de crédito do portador foi clonado, compra feita em e-commerce sem 3DS
+c) Terminal processou a mesma compra duas vezes (duplicata técnica)
+d) Portador cancelou assinatura mensal em dezembro, foi cobrado em janeiro
+e) Compra com chip e PIN, portador nega que realizou
+
+### Exercício 2 — Implementar ChargebackClassifier
+
+```java
+/**
+ * Implemente este classificador que recebe dados de uma disputa e
+ * retorna o reason code mais adequado, a dificuldade de defesa,
+ * e a documentação necessária.
+ */
+public class ChargebackClassifier {
+
+    public record ClassificationResult(
+        String reasonCode,          // ex: "10.4", "12.6", "13.1"
+        String reasonDescription,
+        DefenseDifficulty difficulty, // EASY, MEDIUM, HARD, IMPOSSIBLE
+        List<String> requiredDocuments,
+        String recommendation       // "REPRESENT" ou "ACCEPT"
+    ) {}
+
+    public enum DefenseDifficulty { EASY, MEDIUM, HARD, IMPOSSIBLE }
+
+    public ClassificationResult classify(ChargebackInput input) {
+        // TODO: implemente usando reason codes da tabela Visa
+        // Dica: considere
+        //   - channel (CP vs CNP)
+        //   - 3DS status (authenticated, attempted, not attempted)
+        //   - EMV data present (DE55)
+        //   - PIN verified
+        //   - disputeReason
+        throw new UnsupportedOperationException("Implemente");
+    }
+}
+```
+
+### Exercício 3 — Chargeback Ratio Monitor
+
+```java
+/**
+ * Implemente o monitor que calcula o chargeback ratio por merchant
+ * e gera alertas quando os limiares são atingidos.
+ *
+ * Chargeback Ratio = (Nº chargebacks do mês) / (Nº transações do mês anterior)
+ * Alerta Visa VDMP: ratio > 0.0065 (0.65%) com volume > 100 CBs
+ * Alerta Mastercard ECP: ratio > 0.015 (1.5%) com volume > 100 CBs
+ */
+public class ChargebackRatioMonitor {
+
+    public record MerchantRatio(
+        String merchantId,
+        String merchantName,
+        int chargebackCount,
+        int transactionCount,
+        double ratio,
+        boolean visaAlert,
+        boolean mastercardAlert
+    ) {}
+
+    public List<MerchantRatio> calculateRatios(
+            List<Transaction> transactions,
+            List<Chargeback> chargebacks,
+            YearMonth month) {
+        // TODO: implemente
+        // Agrupe transações por merchant do mês anterior
+        // Agrupe chargebacks por merchant do mês atual
+        // Calcule ratio e determine alertas
+        throw new UnsupportedOperationException("Implemente");
+    }
+}
+```
+
+### Exercício 4 — Retrieval Request Handler (MTI 1644)
+
+Antes de um chargeback, o emissor pode enviar um **Retrieval Request** pedindo documentos da transação original. O switch precisa responder:
+
+```java
+/**
+ * Implemente o handler para Retrieval Requests (MTI 1644/1646).
+ *
+ * Request:  1644 DE37=RRN original, DE38=Auth code original
+ * Response: 1646 DE39=00 (found) ou DE39=25 (not found)
+ *           + dados da transação original em campos apropriados
+ */
+public class RetrievalRequestHandler implements TransactionParticipant {
+
+    private final TransactionRepository repository;
+
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        ISOMsg request = ctx.get("REQUEST");
+
+        // TODO: implemente
+        // 1. Verifique se é MTI 1644
+        // 2. Busque a transação por DE37 (RRN)
+        // 3. Monte resposta 1646 com dados originais
+        // 4. DE39=00 se encontrado, DE39=25 se não encontrado
+        // 5. Inclua DE 31 (File Transfer Request/Response) se necessário
+
+        throw new UnsupportedOperationException("Implemente");
+    }
+}
+```
+
+### Exercício 5 — Análise de Caso Real
+
+Analise este cenário e responda as perguntas:
+
+**Dados:**
+- Transação: R$ 2.400 em e-commerce, crédito, DE22=812 (CNP), sem DE55 (sem EMV)
+- 3DS: não utilizado (ECI ausente)
+- DE43: "LOJA XYZ LTDA SAO PAULO BR"
+- Portador contesta: "não reconheço essa compra" (reason code 10.4 — CNP Fraud)
+- Data da compra: 15/01. Data do chargeback: 03/04 (dentro de 90 dias).
+
+**Perguntas:**
+
+1. O adquirente tem alguma chance de ganhar o representment? Por quê?
+2. Se o merchant tivesse usado 3DS (ECI=05), o resultado seria diferente?
+3. Qual seria o custo total para o merchant se aceitar o chargeback? (Assuma MDR de 3%)
+4. Que mudanças técnicas o merchant deveria implementar para prevenir futuros casos?
+5. Como o switch deveria ter registrado esta transação para facilitar a defesa?
+
+### Desafio — Dispute Automation Engine
+
+Implemente uma versão completa do `DisputeAutomationEngine` (esboçado na Semana 30) que:
+
+1. Busca a transação original pelo RRN do chargeback
+2. Calcula se vale defender (valor mínimo configurável)
+3. Classifica por reason code usando `ChargebackClassifier`
+4. Para reason code 10.4: verifica se tem 3DS (ECI 05/02) → representa automaticamente
+5. Para reason code 12.6: busca transação duplicada no repositório → prova que são distintas
+6. Para outros: encaminha para fila de revisão manual com prioridade baseada no valor
+7. Gera relatório diário com: CBs recebidos, CBs aceitos automaticamente, CBs representados, win rate
+
+Adicione testes unitários para cada cenário.

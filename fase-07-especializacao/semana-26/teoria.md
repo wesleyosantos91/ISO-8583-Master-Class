@@ -633,100 +633,680 @@ Apresente a arquitetura para 3 audiências (escreva o pitch para cada):
 
 # Semana 25 — Mercado Brasileiro
 
-## 1. Estude e documente
+## 1. Regulação — Lei 12.865/2013 e BACEN
 
-- **Arranjos de pagamento:** Lei 12.865/2013, papel do BACEN
-- **Elo:** Quem são os donos (BB, Bradesco, Caixa), specs próprias
-- **Hiper/Hipercard:** Bandeira Itaú, processamento on-us
-- **Sub-adquirência:** PagSeguro, Mercado Pago, iFood, Ifood
-- **Teto de interchange:** Circular BACEN para débito (0.5%)
-- **Antecipação de recebíveis:** O que é, regulação, registradoras (CIP, TAG, CERC)
-- **PIX vs Cartão:** Onde competem, onde coexistem
+A Lei 12.865/2013 criou o framework regulatório dos arranjos de pagamento no Brasil:
 
-## 2. Exercícios
+| Conceito | Definição |
+|----------|-----------|
+| **Arranjo de pagamento** | Conjunto de regras e procedimentos que disciplina serviços de pagamento ao público (ex: "Visa", "Mastercard", "Elo", "Pix") |
+| **Instituidor de arranjo** | Empresa que cria e gerencia o arranjo (Visa, Mastercard, Elo) |
+| **Participante do arranjo** | Bancos, adquirentes, credenciadores |
+| **Interoperabilidade** | BACEN exige que arranjos abertos aceitem outros participantes |
 
-1. **Desenhe o fluxo** de uma transação sub-adquirente: POS iFood → Stone (adquirente) → Visa → Itaú
-2. **Calcule a diferença de receita** entre on-us Hiper vs off-us Visa para o Itaú
-3. **Documente 10 diferenças** entre o ecossistema de cartões BR vs EUA
+**Principais Circulares do BACEN relevantes para cartões:**
+
+| Circular | Tema |
+|----------|------|
+| BACEN 3.887/2018 | Teto de interchange: débito 0,5%, crédito à vista 0,7% |
+| BACEN 3.886/2018 | Regras de transparência para MDR ao merchant |
+| Resolução BCB 150/2021 | Regras de portabilidade de recebíveis |
+
+## 2. Elo — A Bandeira Nacional
+
+A **Elo** pertence ao BB (25%), Bradesco (25%) e Caixa (25%) com outros acionistas. Criada em 2011, hoje é a 3ª maior bandeira no Brasil com ~30% do parque de cartões.
+
+### Diferenças técnicas Elo vs Visa/Master
+
+| Aspecto | Elo | Visa/Mastercard |
+|---------|-----|-----------------|
+| Specs | Elo Tech (próprias) | Visa Core Specs / M-TIP |
+| Processamento | Pode ser on-us entre sócios | Sempre passa pela bandeira |
+| DE48 installments | Formato próprio | Padrão de mercado |
+| Contactless | Paywave/PayPass licenciado | Paywave/PayPass nativos |
+| Certif. Brasil | CELO (sistema próprio) | VCMS / MCW |
+
+### BIN Ranges Elo (referência)
+
+```
+4011xx, 4312xx, 4389xx — Elo clássico (Visa-like prefix)
+6363xx, 6500xx-6550xx  — Elo Nanquim/Grafite
+5067xx, 5090xx         — Elo Mais (Mastercard-like prefix)
+6516xx, 6550xx         — Elo Hipercard (fusão)
+```
+
+## 3. Sub-adquirência — Fluxo Técnico
+
+Na sub-adquirência (PagSeguro, Stone, Cielo-mobile, Mercado Pago), há um intermediário extra:
+
+```
+Terminal/App → Sub-adquirente → Adquirente → Bandeira → Emissor
+              (PagSeguro)      (Cielo)       (Visa)
+```
+
+**Impacto no ISO 8583:**
+
+```
+DE 42 (Merchant ID):    ID do sub-adquirente como merchant no adquirente
+DE 43 (Merchant Name):  Nome do merchant REAL (não do sub-adquirente)
+DE 48 (Additional):     SubElement com ID do merchant real (Soft Descriptor)
+```
+
+### Soft Descriptor — Obrigatório para Sub-adquirentes
+
+O BACEN exige que transações de sub-adquirentes incluam o nome real do merchant na fatura do portador. Implementação via DE 43 ou campo proprietário:
+
+```java
+public class SoftDescriptorBuilder {
+
+    /**
+     * Constrói DE43 com formato padronizado para sub-adquirência.
+     * Formato: "NOME_MERCHANT*NOME_SUBACQ   CIDADE BR"
+     * Máximo 40 caracteres (ISO 8583)
+     */
+    public static String buildDE43(String merchantName, String subAcqName,
+                                    String city) {
+        // Trunca merchant name para caber: nome*subacq = 22 chars, cidade BR = 12 chars
+        String combined = truncate(merchantName, 15) + "*" + truncate(subAcqName, 8);
+        String location = truncate(city, 9) + " BR";
+        // Pad para 40 chars (campo fixo)
+        return String.format("%-22s%-13s  ", combined, location).substring(0, 40);
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) : s;
+    }
+}
+```
+
+## 4. Interchange e Modelo Econômico Brasileiro
+
+### Teto Regulatório (BACEN)
+
+```
+Débito:         máx 0,50% da transação
+Crédito à vista: máx 0,70% da transação
+Crédito parcelado: acima do teto (mercado livre)
+Pré-pago:       máx 0,50%
+```
+
+### Impacto do On-Us
+
+Transação on-us (emissor = adquirente, ex: Bradesco emitindo + Cielo adquirindo, ambos Bradesco) não paga interchange para si mesmo. Resultado: MDR cobrado do merchant pode ser menor.
+
+```java
+public class InterchangeCalculator {
+
+    record InterchangeTable(String processingCode, String network, double rate) {}
+
+    private static final List<InterchangeTable> TABLE = List.of(
+        new InterchangeTable("002000", "ELO",        0.0050),  // débito
+        new InterchangeTable("002000", "VISA",       0.0050),  // débito (teto BACEN)
+        new InterchangeTable("003000", "VISA",       0.0070),  // crédito à vista (teto)
+        new InterchangeTable("003000", "MASTERCARD", 0.0070),
+        new InterchangeTable("003000", "ELO",        0.0060)
+    );
+
+    public BigDecimal calculate(BigDecimal amount, String processingCode,
+                                 String network, boolean isOnUs) {
+        if (isOnUs) return BigDecimal.ZERO; // On-us: sem interchange
+
+        double rate = TABLE.stream()
+            .filter(t -> t.processingCode().startsWith(processingCode.substring(0, 2))
+                      && t.network().equalsIgnoreCase(network))
+            .mapToDouble(InterchangeTable::rate)
+            .findFirst()
+            .orElse(0.007); // default crédito
+
+        return amount.multiply(BigDecimal.valueOf(rate))
+                     .setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+}
+```
+
+## 5. Antecipação de Recebíveis
+
+O merchant recebe o dinheiro de transações de crédito somente após o prazo (D+30 para à vista). A **antecipação** permite receber antes pagando uma taxa.
+
+**Registradoras de Recebíveis (obrigatório desde 2021):**
+
+| Registradora | Controladora |
+|-------------|-------------|
+| CIP (Câmara Interbancária) | B3 |
+| TAG | Associação de Fintechs |
+| CERC | Independente |
+
+```
+Fluxo regulatório de antecipação:
+  1. Merchant agenda recebível na registradora
+  2. Adquirente notifica registradora sobre UR (Unidade de Recebível)
+  3. Banco que antecipa consulta UR disponível
+  4. Fundo é transferido para merchant via PIX/TED
+  5. No vencimento, adquirente paga para o banco (não merchant)
+```
+
+## 6. PIX vs Cartão — Onde Competem
+
+| Caso de uso | PIX | Cartão Débito | Cartão Crédito |
+|-------------|-----|---------------|----------------|
+| Transferência P2P | Melhor | Ruim | N/A |
+| Compra presencial baixo valor | Possível | Bom | Bom |
+| Compra online | Possível (QR) | Bom | Ótimo (proteção) |
+| Parcelamento | Não existe | Não existe | Único |
+| Chargeback/proteção | Fraco | Fraco | Forte |
+| Velocidade de liquidação | Instantâneo (D+0) | D+1 | D+30 |
+| Custo para merchant | ~0% (PIX) | ~1,5-2% | ~2-4% |
+
+**Conclusão:** PIX não substitui crédito. Compete diretamente com débito e transferência. O crédito (especialmente parcelado) é insubstituível no Brasil enquanto não houver produto equivalente.
+
+## 7. Parcelamento — A Peculiaridade Brasileira
+
+### Por que é único no Brasil
+
+No mundo, compras parceladas são feitas via **BNPL** (Buy Now Pay Later — Klarna, Affirm) ou financiamento bancário separado. No Brasil, o parcelamento **está integrado na mensagem ISO 8583** e na fatura do cartão:
+
+```
+Compra de R$ 1.200 em 12x sem juros:
+  - DE4 (Amount) = 000000120000 (R$ 1.200 total)
+  - DE48 (Installment) = "0112" (lojista, 12 parcelas)
+  - Fatura: mostra R$ 100/mês por 12 meses
+```
+
+**Impacto técnico:**
+
+1. **Clearing:** cada parcela pode ser liquidada mensalmente (depende do adquirente)
+2. **Interchange:** parcelas têm interchange diferente (não regulado pelo BACEN como à vista)
+3. **Chargeback:** o portador pode contestar parCelas individuais ou o total
+4. **Antecipação:** merchant pode antecipar parcelas futuras
+
+## 8. Exercícios
+
+1. **Desenhe o fluxo** de uma transação sub-adquirente: App iFood → Stone (sub-acq) → Cielo (acq) → Elo → Itaú
+2. **Implemente `SoftDescriptorBuilder`** com testes: garanta que nomes de 30+ caracteres são truncados corretamente
+3. **Calcule a receita** de uma transação de R$ 100 crédito à vista: quanto fica com o emissor, bandeira, adquirente e merchant? (Assuma MDR 2.5%, interchange 0.7%, assessment 0.1%)
+4. **Documente 5 diferenças** entre certificação Elo (CELO) e certificação Visa (VCMS)
 
 ### Desafio
-Escreva um artigo técnico (LinkedIn-ready) explicando por que parcelamento sem juros é uma peculiaridade brasileira e como impacta a infraestrutura técnica de pagamentos. Mínimo 800 palavras.
+Implemente `InterchangeCalculator` com tabela completa (débito, crédito à vista, parcelado 2-6x, parcelado 7-12x) para as bandeiras Visa, Mastercard e Elo. Adicione lógica de on-us detection baseada em BIN do emissor vs BIN do adquirente.
 
 ---
 
 # Semana 26 — Fluxos Avançados
 
-## 1. Implemente
+## 1. Pre-Authorization — Estado e Lifecycle
 
-### Pre-authorization
-```
-0100 DE25=06 → Pre-auth R$ 2.000 (hotel check-in)
-0200 DE25=06 → Completion R$ 1.500 (checkout)
-0400 → Reversal da diferença (se necessário)
-```
+A **pré-autorização** reserva fundos sem capturar. Usada em hotéis, locadoras, postos de gasolina.
 
-### Incremental Authorization
 ```
-0100 #1 → Pre-auth R$ 2.000
-0100 #2 → Incremental +R$ 500 (referencia #1)
-0200 → Completion R$ 2.300
+DE 25 (Point of Service Condition Code):
+  01 = Normal
+  06 = Pre-authorized request   ← pré-auth
+  10 = Customer not present
 ```
 
-### Partial Approval
+### Diagrama do fluxo hotel
+
 ```
-0100 DE4=10000 → Request R$ 100
-0110 DE4=7500 DE39=10 → Approved R$ 75 (partial)
-Terminal: "Aprovado parcial. Deseja pagar R$ 25 com outro meio?"
+CHECK-IN (D+0):                     CHECK-OUT (D+3):
+0100 DE25=06 DE4=200000             0200 DE25=06 DE4=150000
+    │                                   │
+    │ 0110 DE39=00 DE38=AUTH001         │ 0210 DE39=00
+    ↓ (R$ 2.000 reservado)             ↓ (R$ 1.500 capturado)
+
+0400 (Reversal da diferença R$ 500):
+    Gerado automaticamente pelo terminal/switch
+    DE4=50000 (diferença entre aprovado e capturado)
 ```
 
-### Balance Inquiry
-```
-0100 DE3=300000 → Consulta saldo
-0110 DE39=00 DE54=1001986C000001500000 → Saldo R$ 15.000,00
+### PreAuthorizationManager
+
+```java
+public class PreAuthorizationManager {
+
+    private final Map<String, PreAuthRecord> store = new ConcurrentHashMap<>();
+
+    public record PreAuthRecord(
+        String authCode,          // DE 38 da pré-auth
+        String rrn,               // DE 37
+        BigDecimal reservedAmount, // Valor aprovado
+        BigDecimal capturedAmount, // Valor capturado (0 no início)
+        Instant expiresAt,        // Pre-auth expira em 7 dias (regra de rede)
+        PreAuthStatus status
+    ) {}
+
+    public enum PreAuthStatus { ACTIVE, COMPLETED, REVERSED, EXPIRED }
+
+    /** Registra uma pré-auth aprovada (0110 com DE39=00, DE25=06) */
+    public void registerPreAuth(ISOMsg response) throws ISOException {
+        String authCode = response.getString(38);
+        String rrn      = response.getString(37);
+        long   amount   = Long.parseLong(response.getString(4));
+
+        store.put(rrn, new PreAuthRecord(
+            authCode,
+            rrn,
+            BigDecimal.valueOf(amount, 2),
+            BigDecimal.ZERO,
+            Instant.now().plus(7, java.time.temporal.ChronoUnit.DAYS),
+            PreAuthStatus.ACTIVE
+        ));
+    }
+
+    /** Verifica se completion (0200 DE25=06) está dentro do valor reservado */
+    public boolean validateCompletion(String originalRrn, BigDecimal completionAmount) {
+        PreAuthRecord rec = store.get(originalRrn);
+        if (rec == null) return false;
+        if (rec.status() != PreAuthStatus.ACTIVE) return false;
+        if (Instant.now().isAfter(rec.expiresAt())) {
+            expire(originalRrn);
+            return false;
+        }
+        // Permite até 15% acima do valor pré-autorizado (regra Visa/MC para hotel)
+        BigDecimal maxAllowed = rec.reservedAmount().multiply(BigDecimal.valueOf(1.15));
+        return completionAmount.compareTo(maxAllowed) <= 0;
+    }
+
+    public void complete(String originalRrn, BigDecimal capturedAmount) {
+        store.computeIfPresent(originalRrn, (k, rec) ->
+            new PreAuthRecord(rec.authCode(), rec.rrn(), rec.reservedAmount(),
+                              capturedAmount, rec.expiresAt(), PreAuthStatus.COMPLETED));
+    }
+
+    private void expire(String rrn) {
+        store.computeIfPresent(rrn, (k, rec) ->
+            new PreAuthRecord(rec.authCode(), rec.rrn(), rec.reservedAmount(),
+                              rec.capturedAmount(), rec.expiresAt(), PreAuthStatus.EXPIRED));
+    }
+}
 ```
 
-## 2. Exercícios
+## 2. Incremental Authorization
 
-1. **Implemente cada fluxo** no payment-switch-lab
-2. **Teste cenário de hotel completo:** check-in → minibar → checkout
-3. **Teste partial approval:** terminal lida corretamente com valor reduzido
-4. **Implemente balance inquiry** com DE 54
+Autorização incremental permite aumentar o valor de uma pré-auth ativa sem cancelar a original.
+
+```
+0100 #1 → DE4=200000 DE25=06 → APPROVED DE38=AUTH001 (R$ 2.000)
+0100 #2 → DE4=50000  DE25=06 DE56=<RRN original> → APPROVED (incremental +R$ 500)
+0200    → DE4=230000 DE25=06 → Completion R$ 2.300
+```
+
+**Campo de referência:** DE56 (Original Data) ou DE48 subelemento proprietário carrega o RRN da pré-auth original.
+
+```java
+public class IncrementalAuthBuilder {
+
+    /**
+     * Constrói mensagem de autorização incremental.
+     * @param originalRrn  RRN da pré-auth original (referência)
+     * @param incrementalAmount  Valor ADICIONAL a ser reservado
+     */
+    public ISOMsg build(ISOMsg original0100, String originalRrn,
+                         BigDecimal incrementalAmount) throws ISOException {
+        ISOMsg inc = new ISOMsg();
+        inc.setMTI("0100");
+        inc.set(3,  original0100.getString(3));   // mesmo Processing Code
+        inc.set(4,  formatAmount(incrementalAmount));
+        inc.set(11, generateSTAN());
+        inc.set(22, original0100.getString(22));
+        inc.set(25, "06");                         // pre-auth condition code
+        inc.set(41, original0100.getString(41));
+        inc.set(42, original0100.getString(42));
+        // DE56: dados originais (campo proprietário em muitas redes)
+        inc.set(56, originalRrn);
+        return inc;
+    }
+
+    private String formatAmount(BigDecimal amount) {
+        return String.format("%012d",
+            amount.movePointRight(2).longValue());
+    }
+
+    private String generateSTAN() {
+        return String.format("%06d",
+            (int)(Math.random() * 999999));
+    }
+}
+```
+
+## 3. Partial Approval
+
+O emissor aprova um valor MENOR que o solicitado. O terminal deve lidar com isso.
+
+```
+Terminal → Switch: 0100  DE4=010000 (R$ 100,00)
+Emissor  → Switch: 0110  DE4=007500 DE39=10 (Partial Approved R$ 75,00)
+Switch   → Terminal: 0210 DE4=007500 DE39=10
+Terminal: "Aprovado parcial R$ 75,00. Deseja pagar R$ 25,00 com outro cartão?"
+```
+
+**DE39=10 = Partial Approval** (somente Visa/Master suportam; Elo também)
+
+```java
+public class PartialApprovalHandler implements TransactionParticipant {
+
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        ISOMsg response = ctx.get("RESPONSE");
+        if (response == null) return PREPARED;
+
+        String rc = response.getString(39);
+        if (!"10".equals(rc)) return PREPARED; // Não é partial approval
+
+        // Registra o valor aprovado parcialmente
+        String approvedAmount = response.getString(4);
+        String requestedAmount = ((ISOMsg) ctx.get("REQUEST")).getString(4);
+
+        ctx.put("PARTIAL_APPROVAL", true);
+        ctx.put("APPROVED_AMOUNT", approvedAmount);
+        ctx.put("REQUESTED_AMOUNT", requestedAmount);
+
+        long diff = Long.parseLong(requestedAmount) - Long.parseLong(approvedAmount);
+        ctx.put("REMAINING_AMOUNT", String.format("%012d", diff));
+
+        // Log para auditoria
+        log.info("PARTIAL_APPROVAL approved={} requested={} remaining={}",
+                 approvedAmount, requestedAmount, diff);
+
+        return PREPARED;
+    }
+}
+```
+
+## 4. Balance Inquiry
+
+Consulta de saldo disponível no emissor. Usa DE3=300000 e retorna saldo em DE54.
+
+### Formato DE54 (Additional Amounts)
+
+```
+AA BB CC DDDDDDDDDDDD
+│  │  │  └── Valor (12 dígitos, sem vírgula)
+│  │  └───── Moeda (ex: 986 = BRL)
+│  └──────── Tipo de conta (10=poupança, 20=corrente, 30=crédito disponível)
+└─────────── Account Type (01=corrente, 02=poupança, 04=crédito)
+```
+
+Exemplo: `1001986C000001500000` = conta corrente, crédito disponível, BRL, R$ 15.000,00 (C = credit balance)
+
+```java
+public class BalanceInquiryBuilder {
+
+    /** Constrói 0100 de balance inquiry */
+    public ISOMsg buildRequest(String pan, String terminalId,
+                                String merchantId) throws ISOException {
+        ISOMsg msg = new ISOMsg();
+        msg.setMTI("0100");
+        msg.set(2,  pan);
+        msg.set(3,  "300000");  // Balance Inquiry
+        msg.set(4,  "000000000000");
+        msg.set(11, generateSTAN());
+        msg.set(22, "051");     // chip card, PIN
+        msg.set(25, "00");
+        msg.set(41, terminalId);
+        msg.set(42, merchantId);
+        return msg;
+    }
+
+    /** Parseia DE54 da resposta e retorna saldo em centavos */
+    public long parseBalance(ISOMsg response) throws ISOException {
+        String de54 = response.getString(54);
+        if (de54 == null || de54.length() < 20) return -1;
+
+        // Pode ter múltiplos grupos de 20 chars; pega o primeiro
+        String group = de54.substring(0, 20);
+        char sign    = group.charAt(8);   // 'C' = credit (positivo), 'D' = debit (negativo)
+        long amount  = Long.parseLong(group.substring(9, 21));
+        return "D".equals(String.valueOf(sign)) ? -amount : amount;
+    }
+
+    private String generateSTAN() {
+        return String.format("%06d", (int)(Math.random() * 999999));
+    }
+}
+```
+
+## 5. Exercícios
+
+1. **Implemente o fluxo de hotel completo:** check-in → minibar (+R$ 80) → checkout → auto-reversal da diferença usando `PreAuthorizationManager`
+2. **Teste partial approval:** crie um `IssuerSimulatorAdvanced` que aprova parcialmente transações quando o saldo é insuficiente mas > 0
+3. **Implemente balance inquiry** de ponta a ponta com DE54 corretamente formatado
+4. **Locadora de veículos:** pre-auth R$ 5.000, dano incremental +R$ 2.000, checkout R$ 4.500 — descreva cada mensagem ISO 8583 com todos os campos relevantes
 
 ### Desafio
-Monte um cenário complexo: locadora de veículos. Pre-auth de R$ 5.000, cliente devolve carro com dano (incremental +R$ 2.000), paga R$ 4.500 no checkout, R$ 2.500 fica como chargeback potencial. Quais mensagens são trocadas?
+Implemente um `AdvancedFlowIntegrationTest` que executa os 4 fluxos acima sequencialmente contra um `IssuerSimulator` embarcado, verifica todos os estados intermediários via `PreAuthorizationManager`, e asserta que os valores finais coincidem com o esperado.
 
 ---
 
 # Semana 27 — Certificação e ISO 20022
 
-## 1. Certificação com Bandeiras
+## 1. Certificação com Bandeiras — O Processo Real
 
-- **Test deck:** Conjunto de ~200-500 cenários de teste
-- Cada cenário: "envie esta mensagem, espere esta resposta"
-- Inclui: happy path, declines, reversals, timeouts, EMV, contactless, recurring
-- **Precisa passar 100%** para ir a produção
+A certificação é obrigatória antes de ir a produção. Cada bandeira tem seu próprio programa:
 
-## 2. ISO 20022 — O Futuro
+| Bandeira | Programa | Ferramenta |
+|---------|---------|----------|
+| Visa | VCMS (Visa Certification Management System) | Via portal Visa Developer |
+| Mastercard | MCW (Mastercard Certification Workbench) | Via portal Mastercard Developers |
+| Elo | CELO | Via parceiro certificado |
+| American Express | Próprio | Contato direto |
 
-- XML/JSON based (vs binário do ISO 8583)
-- Visa e Mastercard migrando clearing para ISO 20022
-- PIX já é ISO 20022 nativo
-- Mapeamento ISO 8583 ↔ ISO 20022 é habilidade valiosa
+### 1.1 Estrutura de um Test Deck
+
+Um test deck tem ~200-500 cenários organizados em categorias:
 
 ```
-ISO 8583 DE 2 (PAN) → ISO 20022 /AcctId/IBAN ou /Acct/Id/Othr/Id
-ISO 8583 DE 4 (Amount) → ISO 20022 /IntrBkSttlmAmt
-ISO 8583 DE 39 (Response Code) → ISO 20022 /TxSts
+CATEGORIA 1 — Authorization (Happy Path)
+  TC001: Magnetic stripe, debit, approved (DE39=00)
+  TC002: Chip, credit, approved
+  TC003: Contactless, below floor limit, approved
+  TC004: CNP, 3DS authenticated, approved
+
+CATEGORIA 2 — Authorization (Declines)
+  TC010: Incorrect PIN (DE39=55)
+  TC011: Insufficient funds (DE39=51)
+  TC012: Expired card (DE39=54)
+  TC013: Do not honor (DE39=05)
+  TC014: Card not permitted (DE39=57)
+
+CATEGORIA 3 — Reversals
+  TC020: Timeout reversal (DE39=68 → 0400)
+  TC021: Customer cancellation reversal
+  TC022: Partial reversal
+
+CATEGORIA 4 — Network Management
+  TC030: Sign-on (0800/0810)
+  TC031: Echo (0800/0810 DE70=301)
+  TC032: Key exchange (0800/0810 DE70=161)
+
+CATEGORIA 5 — EMV/Chip specific
+  TC040: ARQC validation
+  TC041: AAC (offline decline) — switch deve processar corretamente
+  TC042: Fallback magnetic stripe (chip falhou)
+  TC043: Contactless NFC, amount below CVM limit
+
+CATEGORIA 6 — Edge cases
+  TC050: Duplicate STAN
+  TC051: Timeout sem reversal (switch deve gerar)
+  TC052: Response fora de tempo (late response)
+  TC053: DE format errors (DE39=30 esperado)
 ```
+
+### 1.2 Test Case Runner — Implementação
+
+```java
+public class CertificationTestRunner {
+
+    public record TestCase(
+        String id,
+        String description,
+        ISOMsg requestTemplate,       // Mensagem a enviar
+        Map<String, String> expectedFields, // DE → valor esperado na resposta
+        boolean expectTimeout,        // Se true, espera null response
+        String category
+    ) {}
+
+    public record TestResult(
+        String testId,
+        boolean passed,
+        String failureReason,
+        ISOMsg actualResponse,
+        long durationMs
+    ) {}
+
+    private final QMUX mux;
+    private final long timeout;
+
+    public List<TestResult> runDeck(List<TestCase> deck) {
+        return deck.parallelStream()
+                   .map(this::runSingle)
+                   .collect(java.util.stream.Collectors.toList());
+    }
+
+    private TestResult runSingle(TestCase tc) {
+        long start = System.currentTimeMillis();
+        try {
+            ISOMsg response = mux.request(tc.requestTemplate(), timeout);
+            long duration   = System.currentTimeMillis() - start;
+
+            if (tc.expectTimeout()) {
+                boolean passed = response == null;
+                return new TestResult(tc.id(), passed,
+                    passed ? null : "Expected timeout but got response DE39=" + response.getString(39),
+                    response, duration);
+            }
+
+            if (response == null) {
+                return new TestResult(tc.id(), false, "TIMEOUT — no response received",
+                                      null, duration);
+            }
+
+            // Verifica cada campo esperado
+            for (Map.Entry<String, String> expected : tc.expectedFields().entrySet()) {
+                int de = Integer.parseInt(expected.getKey());
+                String actual = response.getString(de);
+                if (!expected.getValue().equals(actual)) {
+                    return new TestResult(tc.id(), false,
+                        String.format("DE%d expected=%s actual=%s",
+                                      de, expected.getValue(), actual),
+                        response, duration);
+                }
+            }
+            return new TestResult(tc.id(), true, null, response, duration);
+
+        } catch (Exception e) {
+            return new TestResult(tc.id(), false,
+                "Exception: " + e.getMessage(), null,
+                System.currentTimeMillis() - start);
+        }
+    }
+
+    public void printReport(List<TestResult> results) {
+        long passed = results.stream().filter(TestResult::passed).count();
+        long failed = results.size() - passed;
+
+        System.out.printf("═══ CERTIFICATION TEST RESULTS ═══%n");
+        System.out.printf("Passed: %d / %d%n", passed, results.size());
+        System.out.printf("Failed: %d%n", failed);
+        System.out.printf("Pass Rate: %.1f%%%n",
+                          100.0 * passed / results.size());
+
+        if (failed > 0) {
+            System.out.println("\nFAILED TESTS:");
+            results.stream()
+                   .filter(r -> !r.passed())
+                   .forEach(r -> System.out.printf("  [%s] %s%n",
+                                                    r.testId(), r.failureReason()));
+        }
+    }
+}
+```
+
+### 1.3 Como montar os TestCases a partir de JSON
+
+```java
+public class TestDeckLoader {
+
+    /** Carrega test deck de arquivo JSON do tipo:
+     * [ { "id": "TC001", "mti": "0100", "fields": {"2": "4111...", "4": "000000010000"},
+     *     "expected": {"39": "00"} } ]
+     */
+    public List<CertificationTestRunner.TestCase> load(Path jsonFile,
+                                                        ISOPackager packager) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        JsonNode root = mapper.readTree(jsonFile.toFile());
+        List<CertificationTestRunner.TestCase> deck = new ArrayList<>();
+
+        for (JsonNode node : root) {
+            ISOMsg msg = new ISOMsg();
+            msg.setPackager(packager);
+            msg.setMTI(node.get("mti").asText());
+
+            JsonNode fields = node.get("fields");
+            fields.fields().forEachRemaining(e ->
+                msg.set(Integer.parseInt(e.getKey()), e.getValue().asText()));
+
+            Map<String, String> expected = new LinkedHashMap<>();
+            node.get("expected").fields().forEachRemaining(e ->
+                expected.put(e.getKey(), e.getValue().asText()));
+
+            deck.add(new CertificationTestRunner.TestCase(
+                node.get("id").asText(),
+                node.path("description").asText(""),
+                msg, expected,
+                node.path("expectTimeout").asBoolean(false),
+                node.path("category").asText("GENERAL")
+            ));
+        }
+        return deck;
+    }
+}
+```
+
+## 2. ISO 20022 — O Futuro do Clearing
+
+O ISO 20022 é o padrão moderno de mensagens financeiras (XML/JSON). Visa e Mastercard já migraram o clearing para ISO 20022. O PIX é nativamente ISO 20022.
+
+### 2.1 Mapeamento ISO 8583 → ISO 20022
+
+| ISO 8583 Campo | ISO 20022 Path | Observação |
+|---------------|----------------|------------|
+| DE 2 (PAN) | `/Document/FIToFIPmtSts/TxInfAndSts/OrgnlTxRef/MndtRltdInf/MndtId` | Tokenizado |
+| DE 3 (Processing Code) | `/Document/.../Purp/Cd` | Mapeamento não 1:1 |
+| DE 4 (Amount) | `/Document/.../IntrBkSttlmAmt` | + moeda ISO 4217 |
+| DE 11 (STAN) | `/Document/.../OrgnlEndToEndId` | Chave de correlação |
+| DE 12/13 (Datetime) | `/Document/.../IntrBkSttlmDt` | Formato ISO 8601 |
+| DE 37 (RRN) | `/Document/.../OrgnlTxRef/Refs/Ref` | |
+| DE 38 (Auth Code) | `/Document/.../AddtlInf` (campo proprietário) | Não há campo nativo |
+| DE 39 (Response Code) | `/Document/.../TxSts` com `ACSP`/`RJCT` | Mapeamento por tabela |
+| DE 41 (Terminal ID) | `/Document/.../InitgPty/Id/OrgId/Othr/Id` | |
+| DE 42 (Merchant ID) | `/Document/.../CdtrAgt/FinInstnId/BICFI` | Ou Id proprietário |
+| DE 49 (Currency) | `Ccy` attribute em vários campos | ISO 4217 (ex: BRL=986→"BRL") |
+| DE 55 (EMV) | `/Document/.../AddtlInf` (TLV base64) | Sem campo nativo padronizado |
+
+### 2.2 Response Code Mapping
+
+| ISO 8583 DE39 | ISO 20022 TxSts | Reason Code ISO 20022 |
+|--------------|----------------|-----------------------|
+| 00 | ACSP (Accepted) | — |
+| 05 | RJCT | AM04 (InsufficientFunds) |
+| 14 | RJCT | AC01 (InvalidAccount) |
+| 51 | RJCT | AM04 (InsufficientFunds) |
+| 54 | RJCT | DT01 (InvalidDate — expired) |
+| 55 | RJCT | BE01 (InconsistentWithRecords — PIN) |
+| 57 | RJCT | AG07 (UnsuccessfulDirectDebit) |
+| 96 | RJCT | AM21 (NotAllowed) |
 
 ## 3. Exercícios
 
-1. **Crie um "mini test deck"** com 30 cenários e implemente runner automático
-2. **Documente o processo de certificação** Visa e Mastercard (públicamente disponível)
-3. **Mapeie 10 campos** ISO 8583 → ISO 20022
+1. **Implemente 30 TestCases** cobrindo as 6 categorias do test deck acima e rode com `CertificationTestRunner` contra seu payment-switch-lab
+2. **Crie `TestDeckLoader`** que lê casos de um arquivo JSON — facilita manutenção futura
+3. **Mapeie 20 campos** ISO 8583 → ISO 20022 com exemplos de valores reais
+4. **Implemente response code mapper:** `String toISO20022Status(String de39)` com tabela completa
 
 ### Desafio
-Rode seu mini test deck contra o payment-switch-lab. Quantos cenários passam? Corrija os que falham. Meta: 100%.
+Rode seu test deck completo. Para cada cenário que falhar, abra um "bug report" com: cenário esperado, o que foi recebido, hipótese da causa raiz, e o fix aplicado. Documente como um time real documentaria uma certificação real.
 
 ---
 

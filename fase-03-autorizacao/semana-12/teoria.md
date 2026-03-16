@@ -352,15 +352,43 @@ public class ForwardToIssuer implements TransactionParticipant {
                 ctx.put("NEEDS_REVERSAL", true);
                 return ABORTED; // Vai pro abort, que gera reversal
             }
-            
+
             ctx.put("RESPONSE", response);
             ctx.put("RESPONSE_CODE", response.getString(39));
             return PREPARED;
-            
+
         } catch (Exception e) {
             ctx.put("RESPONSE_CODE", "96");
             return ABORTED;
         }
+    }
+
+    /**
+     * Converte a mensagem de request para o MTI correto ao encaminhar para a rede.
+     *
+     * Fluxo single message (débito):  0200 → envia 0200 direto para o emissor
+     * Fluxo dual message (crédito):   0200 chega do terminal → converte para 0100 ao enviar para bandeira
+     *                                 A captura (0220) é enviada depois, na liquidação
+     *
+     * O tipo de fluxo é determinado pelo DE3 (Processing Code):
+     *   from-account "20" (corrente) ou "10" (poupança) = débito = single message
+     *   from-account "30" (crédito) ou "00" (default) = crédito = dual message
+     */
+    private ISOMsg convertToAuthRequest(ISOMsg original) throws ISOException {
+        ISOMsg req = (ISOMsg) original.clone();
+        String mti = original.getMTI();
+        String de3 = original.getString(3);
+        String fromAccount = (de3 != null && de3.length() >= 4) ? de3.substring(2, 4) : "00";
+
+        if ("0200".equals(mti)) {
+            boolean isSingleMessage = "20".equals(fromAccount) || "10".equals(fromAccount);
+            if (!isSingleMessage) {
+                // Crédito: adquirente converte 0200 em 0100 para enviar à bandeira/emissor
+                req.setMTI("0100");
+            }
+            // Débito: mantém 0200 (single message, autorização = captura)
+        }
+        return req;
     }
 }
 ```
@@ -1121,8 +1149,8 @@ public class ValidateMCCVoucher implements TransactionParticipant {
         TipoVoucher tipo = ctx.get("TIPO_VOUCHER");
         if (tipo == null) return PREPARED; // Não é voucher, passa adiante
 
-        String mcc = msg.getString(26); // DE26 = MCC
-        if (mcc == null) mcc = ctx.get("MCC"); // pode vir de outra fonte
+        String mcc = msg.getString(18); // DE18 = Merchant Category Code (MCC)
+        if (mcc == null) mcc = ctx.get("MCC"); // fallback: roteador pode ter enriquecido o contexto
 
         Set<String> mccPermitidos = switch (tipo) {
             case VALE_REFEICAO -> MCC_VALE_REFEICAO;
