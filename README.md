@@ -38,7 +38,7 @@ Um programa de formação completa para se tornar **referência de mercado em me
 ├── fase-11-lideranca/            ← Semanas 34-36: Liderança, Carreira e Referência
 │
 ├── proximos-passos.md            ← O que estudar depois das 36 semanas
-├── referencias/                  ← Glossário, Response Codes, Modelo Econômico
+├── referencias/                  ← Glossário, Response Codes, Modelo Econômico, Frameworks Java
 │
 └── laboratorio/
     └── payment-switch-lab/       ← Projeto central com esqueleto Java
