@@ -489,7 +489,192 @@ Adquirente → Bandeira:  PIN criptografado com ZPK-B
 
 O PIN em claro NUNCA existe fora do HSM.
 
-## 4. PAN Masking — PCI Mindset
+## 4. Como Construir um PIN Block (ISO 9564 Format 0)
+
+O **PIN Block** é a representação criptografável do PIN do portador. O Format 0 (mais usado) é construído em 3 passos:
+
+### Passo 1 — PIN Block (8 bytes)
+
+```
+Nibble 0:   '0'              (identificador de formato)
+Nibble 1:   tamanho do PIN   (ex: '4' para PIN de 4 dígitos)
+Nibbles 2-N: dígitos do PIN  (ex: '1','2','3','4')
+Nibbles N+1 a 15: 'F'       (padding)
+```
+
+Para PIN=`1234`: `04 12 34 FF FF FF FF FF`
+
+### Passo 2 — PAN Block (8 bytes)
+
+```
+Nibbles 0-3:  '0000'         (zeros fixos)
+Nibbles 4-15: 12 dígitos centrais do PAN (excluindo check digit)
+```
+
+Para PAN=`4532015112830366`:
+- Remove check digit → `453201511283036`
+- Pega os 12 dígitos da direita → `532015112830`
+- PAN Block: `00 00 53 20 15 11 28 30`
+
+### Passo 3 — XOR
+
+```
+PIN Block XOR PAN Block = Cleartext PIN Block
+```
+
+```
+04 12 34 FF FF FF FF FF
+XOR
+00 00 53 20 15 11 28 30
+=
+04 12 67 DF EA EE D7 CF
+```
+
+Este resultado é enviado ao HSM para criptografia com 3DES usando a ZPK.
+
+### Implementação Java
+
+```java
+public class PINBlockBuilder {
+
+    /**
+     * Constrói PIN Block Format 0 (ISO 9564-1).
+     * @param pin  PIN do portador (4-12 dígitos)
+     * @param pan  PAN completo (13-19 dígitos)
+     * @return     8 bytes do cleartext PIN block (deve ser criptografado imediatamente)
+     */
+    public static byte[] buildFormat0(String pin, String pan) {
+        if (pin == null || pin.length() < 4 || pin.length() > 12)
+            throw new IllegalArgumentException("PIN deve ter 4-12 dígitos");
+        if (pan == null || pan.length() < 13)
+            throw new IllegalArgumentException("PAN inválido");
+
+        // ── Passo 1: PIN Block ──────────────────────────────────────────
+        // Nibbles: 0 | len | digit... | F...F (16 nibbles = 8 bytes)
+        char[] pinNibbles = new char[16];
+        pinNibbles[0] = '0';
+        pinNibbles[1] = (char) ('0' + pin.length());
+        for (int i = 0; i < pin.length(); i++)
+            pinNibbles[2 + i] = pin.charAt(i);
+        for (int i = 2 + pin.length(); i < 16; i++)
+            pinNibbles[i] = 'F';
+
+        byte[] pinBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            pinBlock[i] = (byte) ((hexVal(pinNibbles[i * 2]) << 4)
+                                 | hexVal(pinNibbles[i * 2 + 1]));
+
+        // ── Passo 2: PAN Block ──────────────────────────────────────────
+        // Remove check digit → pega 12 dígitos mais à direita
+        String panStripped = pan.replaceAll("\\D", "");
+        String panDigits = panStripped.substring(panStripped.length() - 13,
+                                                  panStripped.length() - 1);
+        String panHex = "0000" + panDigits;   // 16 nibbles
+
+        byte[] panBlock = new byte[8];
+        for (int i = 0; i < 8; i++)
+            panBlock[i] = (byte) ((hexVal(panHex.charAt(i * 2)) << 4)
+                                 | hexVal(panHex.charAt(i * 2 + 1)));
+
+        // ── Passo 3: XOR ────────────────────────────────────────────────
+        byte[] result = new byte[8];
+        for (int i = 0; i < 8; i++)
+            result[i] = (byte) (pinBlock[i] ^ panBlock[i]);
+
+        // Zera buffers intermediários (boa prática de segurança)
+        java.util.Arrays.fill(pinBlock, (byte) 0);
+        java.util.Arrays.fill(panBlock, (byte) 0);
+        java.util.Arrays.fill(pinNibbles, '\0');
+
+        return result;
+    }
+
+    // ── Criptografia com 3DES (via HSM ou JCE) ─────────────────────────
+    /**
+     * Simula criptografia 3DES para fins didáticos.
+     * Em produção SEMPRE usar HSM — nunca chave em memória.
+     */
+    public static byte[] encrypt3DES(byte[] pinBlock, byte[] zpk) throws Exception {
+        javax.crypto.SecretKey key = new javax.crypto.spec.SecretKeySpec(zpk, "DESede");
+        javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("DESede/ECB/NoPadding");
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key);
+        return cipher.doFinal(pinBlock);
+    }
+
+    private static int hexVal(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return 0xF;  // trata 'F' de padding
+    }
+
+    // ── Utilidade: bytes → hex string ──────────────────────────────────
+    public static String toHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes)
+            sb.append(String.format("%02X", b & 0xFF));
+        return sb.toString();
+    }
+}
+```
+
+### Testes
+
+```java
+class PINBlockBuilderTest {
+
+    @Test
+    void testBuildFormat0_knownVector() {
+        // Vetor de teste amplamente documentado
+        byte[] result = PINBlockBuilder.buildFormat0("1234", "4532015112830366");
+        String hex = PINBlockBuilder.toHex(result);
+        assertEquals("041267DFEAEED7CF", hex);
+    }
+
+    @Test
+    void testBuildFormat0_sixDigitPIN() {
+        byte[] result = PINBlockBuilder.buildFormat0("123456", "4532015112830366");
+        String hex = PINBlockBuilder.toHex(result);
+        // Nibbles PIN: 0 6 1 2 3 4 5 6 F F F F F F F F
+        // = 06 12 34 56 FF FF FF FF
+        // XOR PAN Block 00 00 53 20 15 11 28 30
+        // = 06 12 67 76 EA EE D7 CF
+        assertEquals("061267 76EAEED7CF".replace(" ", ""), hex);
+    }
+
+    @Test
+    void testPINTooShort() {
+        assertThrows(IllegalArgumentException.class,
+            () -> PINBlockBuilder.buildFormat0("123", "4532015112830366"));
+    }
+
+    @Test
+    void testInvalidPAN() {
+        assertThrows(IllegalArgumentException.class,
+            () -> PINBlockBuilder.buildFormat0("1234", "123"));
+    }
+}
+```
+
+### Fluxo Completo Terminal → Emissor
+
+```
+Terminal                  Adquirente              HSM              Emissor
+   │                          │                    │                  │
+   │  PIN digitado             │                    │                  │
+   │  PINBlock = Format0(PIN,PAN)                   │                  │
+   │  EncPINBlock = DUKPT_enc(PINBlock)             │                  │
+   │─── 0200 [DE52=EncPINBlock, KSN] ──►            │                  │
+   │                          │── TranslatePIN ────►│                  │
+   │                          │   (ZPK-A → ZPK-B)  │                  │
+   │                          │◄── EncPINBlock' ────│                  │
+   │                          │─────── 0100 [DE52=EncPINBlock'] ──────►│
+   │                          │                    │  verifica PIN     │
+   │                          │◄────────────────── 0110 [DE39=00] ─────│
+   │◄── 0210 [DE39=00] ───────│                    │                  │
+```
+
+## 5. PAN Masking — PCI Mindset
 
 ```java
 public class PANMasker {
