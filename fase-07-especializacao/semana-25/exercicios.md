@@ -192,7 +192,65 @@ Teste com cenários de:
 
 ---
 
-## Exercício 6 — Revisão: Mercado Brasileiro
+## Exercício 6 — On-Us e Off-Us no PIX com Cartão de Crédito (Avançado)
+
+No PIX com cartão de crédito, o on-us/off-us existe em duas dimensões independentes: a perna do cartão (ISO 8583) e a perna do PIX (SPI). O switch precisa identificar ambas para rotear corretamente e calcular os custos da transação.
+
+Implemente `PixCreditOnUsClassifier` que determina as duas dimensões de roteamento:
+
+```java
+public class PixCreditOnUsClassifier {
+
+    public record PixCreditRouting(
+        boolean cardOnUs,          // PSP iniciador == emissor do cartão
+        boolean pixOnUs,           // emissor == PSP do recebedor (via DICT)
+        String cardRoute,          // "INTERNAL_ISSUER" ou "CARD_NETWORK"
+        String pixRoute,           // "INTERNAL_TRANSFER" ou "SPI"
+        BigDecimal interchangeFee, // zero se cardOnUs=true
+        boolean strRequired        // true se pixOnUs=false (precisa do SPI/STR)
+    ) {}
+
+    /**
+     * Classifica uma transação PIX Crédito nas duas dimensões on-us/off-us.
+     *
+     * @param cardBin        BIN do cartão (DE2, primeiros 6-8 dígitos)
+     * @param initiatorPspId Identificador do PSP que iniciou a transação
+     * @param pixKey         Chave PIX do recebedor (para lookup no DICT)
+     */
+    public PixCreditRouting classify(
+        String cardBin,
+        String initiatorPspId,
+        String pixKey
+    ) { /* ... */ }
+}
+```
+
+Escreva testes cobrindo os 4 cenários da matriz:
+
+| Teste | BIN emissor | PSP iniciador | PSP do recebedor | Resultado esperado |
+|-------|------------|--------------|-----------------|-------------------|
+| 1 | Itaú | Itaú | Itaú | cardOnUs=true, pixOnUs=true |
+| 2 | Itaú | Itaú | Nubank | cardOnUs=true, pixOnUs=false |
+| 3 | Bradesco | PicPay | Bradesco | cardOnUs=false, pixOnUs=true |
+| 4 | Bradesco | PicPay | Nubank | cardOnUs=false, pixOnUs=false |
+
+Responda também:
+
+**a)** Em qual dos 4 cenários o interchange é zero? Por quê?
+
+**b)** Em qual cenário o `strRequired=false`? O que isso significa em termos de custo operacional para o emissor?
+
+**c)** Um banco grande como o Itaú tem interesse em maximizar qual cenário? Como isso influencia a estratégia de produto (e.g., oferecer PIX crédito só para clientes correntistas Itaú que recebem em conta Itaú)?
+
+**d)** Se o PSP do recebedor estiver fora do ar mas o SPI estiver disponível, qual dimensão de on-us/off-us é afetada? O que o switch deve fazer?
+
+**Objetivo:** Entender que o on-us/off-us no PIX crédito é bidimensional e que decisões de produto (quem pode usar, quais recebedores) são influenciadas diretamente por custos de roteamento.
+
+**Dica:** Para resolver a dimensão PIX, o switch consulta o DICT (Diretório de Identificadores de Contas Transacionais) do BACEN via API para descobrir qual PSP está associado à chave PIX do recebedor.
+
+---
+
+## Exercício 7 — Revisão: Mercado Brasileiro
 
 Responda cada questão:
 

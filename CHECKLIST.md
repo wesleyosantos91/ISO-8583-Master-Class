@@ -217,7 +217,10 @@ Marque `[x]` ao completar cada item. Seja honesto — só marque quando realment
 - [ ] Entendo o modelo econômico: MDR, interchange e IOF no PIX crédito vs PIX tradicional
 - [ ] Sei como chargebacks funcionam no PIX crédito e por que são mais complexos que no PIX tradicional
 - [ ] Entendo o risco de idempotência dual-leg e como mitigá-lo no switch
+- [ ] Sei que o on-us/off-us no PIX crédito tem duas dimensões: perna do cartão (ISO 8583) e perna do PIX (SPI)
+- [ ] Consigo classificar os 4 cenários da matriz on-us/off-us e identificar o impacto em interchange e custo STR
 - [ ] Implementei `PixCreditDetector` com identificação por DE48 e extração de chave/txid
+- [ ] Implementei `PixCreditOnUsClassifier` com roteamento dual (INTERNAL_ISSUER vs CARD_NETWORK + INTERNAL_TRANSFER vs SPI)
 - [ ] Completei exercícios
 - [ ] Entreguei o desafio
 

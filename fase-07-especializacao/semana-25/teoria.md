@@ -1080,6 +1080,111 @@ A reconciliação cruza RRN/STAN com `endToEndId` para garantir que cada autoriz
 
 ---
 
+### 7.8 On-Us e Off-Us no PIX com Cartão de Crédito
+
+No PIX com cartão de crédito, o conceito de on-us/off-us existe em **duas dimensões independentes** — uma para cada perna do processamento dual-leg.
+
+#### Dimensão 1 — Cartão (Leg ISO 8583)
+
+Igual ao cartão tradicional: compara o PSP/adquirente iniciador da transação com o emissor do cartão.
+
+```
+On-us cartão:  PSP iniciador == emissor do cartão
+               (ex: app Itaú inicia PIX Crédito com cartão Itaú)
+               → autorização interna, sem hop de rede externa
+
+Off-us cartão: PSP iniciador != emissor do cartão
+               (ex: app PicPay inicia PIX Crédito com cartão Bradesco)
+               → mensagem ISO 8583 vai pela Visa/Master/Elo até o Bradesco
+```
+
+**Impacto on-us cartão:**
+- **Interchange:** zero (ou tabela interna — não paga à bandeira)
+- **Latência Leg 1:** menor (sem round-trip de rede externa)
+- **Risco de crédito:** avaliado internamente (sem regras de bandeira)
+
+#### Dimensão 2 — PIX (Leg SPI)
+
+Compara o emissor (que envia o PIX após a autorização) com o PSP do recebedor.
+
+```
+On-us PIX:  emissor == PSP do recebedor
+            (ex: Itaú autorizou o crédito e o recebedor tem conta Itaú)
+            → transferência interna, sem liquidação no STR/SPI do BACEN
+
+Off-us PIX: emissor != PSP do recebedor
+            (ex: Itaú autorizou o crédito e o recebedor tem conta Nubank)
+            → PIX vai pelo SPI (Sistema de Pagamentos Instantâneos)
+            → liquidação no STR com custo de reserva bancária
+```
+
+**Impacto on-us PIX:**
+- **Custo de liquidação:** sem tarifa STR (economicamente relevante em alto volume)
+- **Latência Leg 2:** menor (sem round-trip SPI)
+- **Disponibilidade:** não depende do SPI estar disponível (janela de manutenção)
+
+#### Matriz dos 4 Cenários
+
+| Cartão | PIX | Exemplo real | Interchange | Custo STR | Complexidade |
+|--------|-----|-------------|-------------|-----------|--------------|
+| **On-us** | **On-us** | Itaú inicia → cartão Itaú → recebedor Itaú | Zero | Zero | Menor |
+| **On-us** | **Off-us** | Itaú inicia → cartão Itaú → recebedor Nubank | Zero | Sim | Média |
+| **Off-us** | **On-us** | PicPay → cartão Bradesco → recebedor Bradesco | Sim (Visa/Master) | Zero | Média |
+| **Off-us** | **Off-us** | PicPay → cartão Bradesco → recebedor Nubank | Sim (Visa/Master) | Sim | Maior |
+
+> O cenário **off-us cartão + off-us PIX** é o mais custoso e mais comum no mercado, pois o ecossistema brasileiro é altamente fragmentado (múltiplos emissores, múltiplos PSPs).
+
+#### Impacto no Switch — Roteamento Dual
+
+O switch precisa identificar ambas as dimensões para rotear corretamente:
+
+```java
+public class PixCreditRoutingParticipant implements TransactionParticipant {
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        if (!"PIX_CREDIT".equals(ctx.get("TX_TYPE"))) return PREPARED;
+
+        String issuerBin    = extractIssuerBin(ctx);   // BIN do cartão (DE2)
+        String acquirerInst = (String) ctx.get("ACQUIRER_INST");
+        String payeeBank    = resolvePayeeBank((String) ctx.get("PIX_KEY")); // via DICT
+
+        // Dimensão 1: on-us/off-us do cartão
+        boolean cardOnUs = acquirerInst.equals(binTable.resolveIssuer(issuerBin));
+        ctx.put("CARD_ON_US", cardOnUs);
+
+        // Dimensão 2: on-us/off-us do PIX
+        boolean pixOnUs = acquirerInst.equals(payeeBank);
+        ctx.put("PIX_ON_US", pixOnUs);
+
+        // Rota Leg 1
+        ctx.put("CARD_ROUTE", cardOnUs ? "INTERNAL_ISSUER" : "CARD_NETWORK");
+
+        // Rota Leg 2
+        ctx.put("PIX_ROUTE", pixOnUs ? "INTERNAL_TRANSFER" : "SPI");
+
+        return PREPARED;
+    }
+}
+```
+
+#### On-Us Cartão — Simplificação do Fluxo
+
+Quando o cartão é on-us, a Leg 1 não precisa sair para a rede de cartão:
+
+```
+Off-us cartão (fluxo padrão):
+  PSP Iniciador → Bandeira (Visa/Master/Elo) → Emissor → Bandeira → PSP
+
+On-us cartão (fluxo simplificado):
+  PSP Iniciador → Emissor (interno)
+  (sem hop de rede; PSP e emissor são a mesma instituição)
+```
+
+Isso é economicamente relevante: grandes bancos (Itaú, Bradesco, BB) têm volumes altos de on-us e economizam o assessment fee da bandeira nessas transações.
+
+---
+
 ## 8. Parcelamento — A Peculiaridade Brasileira
 
 ### Por que é único no Brasil
