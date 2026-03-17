@@ -124,7 +124,75 @@ public class SubAcquirerResolver {
 
 ---
 
-## Exercício 5 — Revisão: Mercado Brasileiro
+## Exercício 5 — PIX com Cartão de Crédito (Intermediário)
+
+O PIX com cartão de crédito introduz uma perna ISO 8583 (autorização de crédito) seguida de uma perna SPI (liquidação PIX). O `endToEndId` do SPI deve ser correlacionado ao STAN ISO 8583 para reconciliação.
+
+### Parte A — Identificação da modalidade no switch
+
+Implemente `PixCreditDetector` que analisa uma `ISOMsg` e determina se é PIX crédito:
+
+```java
+public class PixCreditDetector {
+
+    public record PixCreditContext(
+        boolean isPixCredit,
+        String pixKey,            // chave DICT do recebedor (DE48 subelemento)
+        String pixKeyType,        // CHAVE, QRCODE, COPIA_COLA
+        String txid,              // identificador de correlação SPI
+        String pixModalidade      // PIX_CREDITO_AVISTA, PIX_PARCELADO
+    ) {}
+
+    /**
+     * Analisa DE3 e DE48 para identificar PIX crédito.
+     * DE3 primeiros 2 dígitos = 00 (compra) com sub-elementos PIX em DE48.
+     * Retorna PixCreditContext com isPixCredit=false se não for PIX crédito.
+     */
+    public PixCreditContext detect(ISOMsg msg) { /* ... */ }
+}
+```
+
+Escreva testes com:
+- Mensagem 0200 de crédito à vista (sem PIX) → `isPixCredit=false`
+- Mensagem 0200 com DE48 contendo chave PIX e txid → `isPixCredit=true`, campos extraídos corretamente
+- Mensagem 0200 PIX parcelado → `pixModalidade=PIX_PARCELADO`
+
+### Parte B — Reconciliação dual-leg
+
+Implemente `PixCreditReconciler` que cruza o arquivo de clearing ISO 8583 com o extrato SPI:
+
+```java
+public class PixCreditReconciler {
+
+    public record ReconciliationResult(
+        List<ReconciledPair> matched,       // ISO auth + SPI liquidado
+        List<IsoAuth> isoWithoutSpi,        // auth aprovado mas PIX não encontrado
+        List<SpiEntry> spiWithoutIso        // PIX liquidado mas sem auth ISO
+    ) {}
+
+    /**
+     * Cruza autorizações ISO 8583 (por RRN/STAN) com entradas SPI (por endToEndId/txid).
+     * O vínculo é feito pelo txid presente em DE48 da mensagem ISO e no extrato SPI.
+     */
+    public ReconciliationResult reconcile(
+        List<IsoAuth> isoAuths,
+        List<SpiEntry> spiEntries
+    ) { /* ... */ }
+}
+```
+
+Teste com cenários de:
+- Par ISO + SPI casados corretamente
+- ISO aprovado mas PIX ausente (falha na Leg 2)
+- PIX presente mas ISO rejeitado (situação anômala que indica problema de idempotência)
+
+**Objetivo:** Entender a complexidade de reconciliação em sistemas dual-leg e por que o txid/endToEndId é o campo de correlação crítico.
+
+**Dica:** Em produção, um ISO aprovado sem SPI correspondente é um alerta crítico — significa que o portador foi cobrado mas o merchant não recebeu.
+
+---
+
+## Exercício 6 — Revisão: Mercado Brasileiro
 
 Responda cada questão:
 

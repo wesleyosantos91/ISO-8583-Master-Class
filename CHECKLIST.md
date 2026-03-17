@@ -210,6 +210,14 @@ Marque `[x]` ao completar cada item. Seja honesto — só marque quando realment
 - [ ] Entendo antecipação de recebíveis e registradoras (CIP/CERC/TAG)
 - [ ] Conheço o teto de interchange BACEN (0.5% débito)
 - [ ] Entendo Open Finance e DREX em contexto de pagamentos
+- [ ] Entendo o que é PIX com cartão de crédito (PIX Garantido/PIX Crédito) e por que surgiu (Res. BCB nº 195/2022)
+- [ ] Sei diferenciar as modalidades: PIX Crédito à vista, PIX Parcelado sem juros, PIX Parcelado com juros
+- [ ] Consigo desenhar o fluxo dual-leg (Leg 1: ISO 8583 auth; Leg 2: PIX/SPI liquidação)
+- [ ] Sei quais campos ISO 8583 carregam a chave DICT, txid e endToEndId (DE3, DE48, DE63)
+- [ ] Entendo o modelo econômico: MDR, interchange e IOF no PIX crédito vs PIX tradicional
+- [ ] Sei como chargebacks funcionam no PIX crédito e por que são mais complexos que no PIX tradicional
+- [ ] Entendo o risco de idempotência dual-leg e como mitigá-lo no switch
+- [ ] Implementei `PixCreditDetector` com identificação por DE48 e extração de chave/txid
 - [ ] Completei exercícios
 - [ ] Entreguei o desafio
 

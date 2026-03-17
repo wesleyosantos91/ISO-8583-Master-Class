@@ -868,19 +868,219 @@ Fluxo regulatório de antecipação:
 
 ## 6. PIX vs Cartão — Onde Competem
 
-| Caso de uso | PIX | Cartão Débito | Cartão Crédito |
-|-------------|-----|---------------|----------------|
-| Transferência P2P | Melhor | Ruim | N/A |
-| Compra presencial baixo valor | Possível | Bom | Bom |
-| Compra online | Possível (QR) | Bom | Ótimo (proteção) |
-| Parcelamento | Não existe | Não existe | Único |
-| Chargeback/proteção | Fraco | Fraco | Forte |
-| Velocidade de liquidação | Instantâneo (D+0) | D+1 | D+30 |
-| Custo para merchant | ~0% (PIX) | ~1,5-2% | ~2-4% |
+| Caso de uso | PIX Tradicional | PIX com Crédito | Cartão Débito | Cartão Crédito |
+|-------------|-----------------|-----------------|---------------|----------------|
+| Transferência P2P | Melhor | N/A | Ruim | N/A |
+| Compra presencial baixo valor | Ótimo | Bom | Bom | Bom |
+| Compra online | Possível (QR) | Bom | Bom | Ótimo (proteção) |
+| Parcelamento | Não existe | Sim (PIX Parcelado) | Não existe | Único |
+| Chargeback/proteção | Fraco (MED) | Médio (rede cartão) | Fraco | Forte |
+| Velocidade de liquidação | D+0 (merchant) | D+0 (merchant) | D+1 | D+30 |
+| Custo para merchant | ~0% | ~1,5–3,5% | ~1,5–2% | ~2–4% |
+| IOF para portador | Não | Sim | Não | Sim |
 
-**Conclusão:** PIX não substitui crédito. Compete diretamente com débito e transferência. O crédito (especialmente parcelado) é insubstituível no Brasil enquanto não houver produto equivalente.
+**Conclusão:** O PIX com cartão de crédito surgiu para preencher o gap entre PIX (custo zero, D+0) e crédito (prazo para portador). Para o merchant, é o melhor de dois mundos: recebe D+0 mas aceita portadores sem saldo imediato. Ver seção 7 para detalhes técnicos completos.
 
-## 7. Parcelamento — A Peculiaridade Brasileira
+---
+
+## 7. PIX com Cartão de Crédito — O Produto Híbrido
+
+### 7.1 O que é e por que surgiu
+
+O **PIX com cartão de crédito** (também chamado de **PIX Garantido** ou **PIX Crédito**) é uma modalidade híbrida em que o pagador usa a chave PIX para iniciar a transação, mas os fundos são debitados do **limite do cartão de crédito** — não do saldo em conta corrente.
+
+O Banco Central regulamentou essa modalidade por meio da **Resolução BCB nº 195/2022**, que autorizou instituições financeiras participantes do SPI (Sistema de Pagamentos Instantâneos) a oferecer linhas de crédito vinculadas a transações PIX. O produto combina:
+
+- **Para o recebedor:** crédito instantâneo via PIX (D+0), sem alteração no fluxo de recebimento
+- **Para o pagador:** uso do limite do cartão, cobrança na fatura (D+30) ou em parcelas
+- **Para o emissor:** nova fonte de receita de crédito sem depender de terminal físico
+
+---
+
+### 7.2 Modalidades
+
+| Modalidade | Descrição | Liquidação ao merchant | Cobrança do portador |
+|-----------|-----------|------------------------|----------------------|
+| **PIX Crédito à vista** | Débito integral na fatura | D+0 (imediato) | D+30 (fatura mensal) |
+| **PIX Parcelado sem juros** | Portador paga em N parcelas; lojista absorve custo | D+0 (imediato) | N parcelas mensais fixas |
+| **PIX Parcelado com juros** | Financiamento pelo emissor | D+0 (imediato) | N parcelas + juros (IOF + taxas) |
+
+> **Diferencial competitivo:** o merchant recebe instantaneamente (como PIX tradicional), mas o portador tem prazo (como cartão de crédito). Isso eliminou o principal obstáculo do PIX para compras de alto valor.
+
+---
+
+### 7.3 Fluxo Técnico — Dual Leg (ISO 8583 + SPI)
+
+O processamento envolve **duas pernas** independentes:
+
+```
+Portador              PSP/Emissor              Rede de Cartão        Recebedor
+   │                      │                         │                    │
+   │── Inicia PIX Crédito ►│                         │                    │
+   │   (chave PIX +        │──── 0200 ISO 8583 ──────►│                    │
+   │    escolhe crédito)   │  DE3=003000             │                    │
+   │                      │  DE48=PIX_KEY+TXID       │                    │
+   │                      │◄─── 0210 DE39=00 ────────│                    │
+   │                      │                         │                    │
+   │                      │──── PIX via SPI ──────────────────────────────►│
+   │                      │    (endToEndId correlacionado ao STAN)  (D+0 crédito)
+   │◄── Confirmação ───────│                         │                    │
+```
+
+**Leg 1 — Autorização ISO 8583:**
+- PSP do pagador envia 0200 para a bandeira (Visa, Master, Elo)
+- Bandeira roteia para o emissor, que autoriza o uso do limite de crédito
+- DE3 primeiros 2 dígitos `00` = compra / `20` = devolução crédito
+- DE48 ou campos privados da bandeira carregam chave DICT, txid PIX e tipo de transação
+
+**Leg 2 — Liquidação PIX/SPI:**
+- Após DE39=00 na Leg 1, o emissor inicia um PIX no SPI para o recebedor
+- Valor creditado na conta do recebedor em até 10 segundos
+- O recebedor vê apenas um crédito PIX — sem visibilidade sobre o funding vir de cartão
+
+**Risco de idempotência:** se Leg 1 for aprovada mas Leg 2 falhar, o sistema deve garantir reenvio do PIX sem nova cobrança ao portador. Esse é o principal desafio operacional da modalidade.
+
+---
+
+### 7.4 Campos ISO 8583 Envolvidos
+
+| Campo | Descrição no PIX Crédito |
+|-------|--------------------------|
+| **DE3 (Processing Code)** | `003000` compra crédito; `203000` devolução/crédito ao portador |
+| **DE4 (Amount)** | Valor total da transação |
+| **DE22 (POS Entry Mode)** | `010` credencial digitalizada/e-wallet; `812` QR Code via app PSP |
+| **DE48 (Additional Data)** | Subelementos com: chave DICT do recebedor, tipo PIX (`CHAVE`, `QRCODE`, `COPIA_COLA`), txid e correlação SPI |
+| **DE61 (POS Data)** | Ambiente remoto para transações iniciadas via app (sem terminal físico) |
+| **DE63 (Network Data)** | Campos de bandeira para trafegar `endToEndId` e metadados SPI |
+| **DE125 / DE127** | Campos Elo/privados para dados complementares do arranjo PIX |
+
+> O `endToEndId` gerado no SPI deve ser correlacionado com o STAN ISO 8583 para reconciliação entre as duas pernas. Sem esse vínculo, a auditoria das operações fica comprometida.
+
+---
+
+### 7.5 Modelo Econômico
+
+O PIX com cartão de crédito **muda radicalmente o modelo econômico** comparado ao PIX tradicional:
+
+```
+PIX Tradicional:
+  MDR ≈ 0% (arranjo BACEN, custo zero regulatório para merchant)
+  Interchange: não existe
+  Liquidação ao merchant: D+0 ou D+1 útil
+
+PIX com Cartão de Crédito:
+  MDR ≈ 1,5–3,5% (similar ao crédito tradicional)
+  Interchange: tabela da bandeira (~0,7% à vista, 1,8–2,2% parcelado)
+  Liquidação ao merchant: D+0 (via PIX)
+  IOF: 0,38% fixo + 0,0082%/dia sobre o valor do crédito
+```
+
+**Fluxo de receita por participante:**
+
+| Participante | O que recebe | Quem paga |
+|-------------|--------------|-----------|
+| Emissor | Interchange + spread de crédito/juros | Adquirente / portador |
+| Bandeira | Assessment fee (~0,1%) | Adquirente |
+| Adquirente/PSP | MDR − interchange − assessment | Merchant |
+| Merchant | Valor líquido (D+0) | — |
+| Portador | — | IOF + eventual juros |
+
+---
+
+### 7.6 Chargebacks e Disputes
+
+O PIX crédito introduz complexidade nos disputes inexistente no PIX tradicional:
+
+```
+PIX Tradicional (sem crédito):
+  - Sem chargeback via rede de cartão
+  - Devolução via SPI: MED (Mecanismo Especial de Devolução)
+  - Prazo MED: até 90 dias (fraude) ou D+1 (erro operacional)
+
+PIX com Cartão de Crédito:
+  - Chargeback via rede de cartão (reason codes Visa 10.x/13.x, Mastercard 4853/4863, Elo)
+  - Merchant recebeu via PIX (irrevogável), mas pode ter chargeback retroativo
+  - Dispute gerenciado pelo lado ISO 8583, não pelo SPI
+  - Merchant deve preservar: endToEndId SPI + dados ISO da transação
+```
+
+**Cenário crítico — exposição do emissor:**
+1. Portador contesta transação via chargeback na rede de cartão
+2. Merchant perde o chargeback (sem evidência suficiente)
+3. O valor PIX já foi recebido pelo merchant (irrevogável no SPI)
+4. Resultado: o emissor absorve a perda (estorna o portador e não recupera o PIX)
+
+Por isso, emissores aplicam **regras de risco mais rigorosas** (velocity, device binding, score mínimo) para autorizar PIX crédito do que para PIX tradicional.
+
+---
+
+### 7.7 Impacto no Switch — Novos Participants
+
+Para suportar PIX com cartão de crédito no switch jPOS, são necessários novos participants no TransactionManager:
+
+```java
+// Participant: identifica e marca transações PIX Crédito no contexto
+public class PixCreditIdentifierParticipant implements TransactionParticipant {
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        ISOMsg msg = (ISOMsg) ctx.get("REQUEST");
+
+        String de48 = msg.getString(48);
+        boolean isPixCredit = de48 != null && de48.contains("PIXCRED");
+
+        if (isPixCredit) {
+            ctx.put("TX_TYPE", "PIX_CREDIT");
+            ctx.put("PIX_KEY", extractPixKey(de48));   // chave DICT do recebedor
+            ctx.put("PIX_TXID", extractTxId(de48));    // txid para idempotência SPI
+        }
+        return PREPARED;
+    }
+}
+
+// Participant: após aprovação ISO 8583, dispara o PIX via SPI
+public class SpiDispatchParticipant implements TransactionParticipant {
+    @Override
+    public int prepare(long id, Serializable context) {
+        Context ctx = (Context) context;
+        if (!"PIX_CREDIT".equals(ctx.get("TX_TYPE"))) return PREPARED;
+
+        String pixKey  = (String) ctx.get("PIX_KEY");
+        String txid    = (String) ctx.get("PIX_TXID");
+        BigDecimal amt = (BigDecimal) ctx.get("AMOUNT");
+
+        // Disparo assíncrono; guarda endToEndId para correlação e reconciliação
+        String endToEndId = spiClient.sendPixCredit(pixKey, amt, txid);
+        ctx.put("SPI_END_TO_END_ID", endToEndId);
+        return PREPARED;
+    }
+
+    @Override
+    public void abort(long id, Serializable context) {
+        // ISO 8583 falhou APÓS SPI enviado: solicitar devolução no SPI
+        String endToEndId = (String) ((Context) context).get("SPI_END_TO_END_ID");
+        if (endToEndId != null) {
+            spiClient.requestRefund(endToEndId, "FALHA_AUTORIZACAO_ISO");
+        }
+    }
+}
+```
+
+**Reconciliação dual-leg:**
+
+```
+Clearing ISO 8583          Extrato SPI
+  RRN:  123456789012   ←→   endToEndId: E9999...2024abc
+  STAN: 001234              txid: abc123
+  DE39: 00 (aprovado)       status: LIQUIDADO
+  Valor: R$ 500,00          Valor: R$ 500,00
+```
+
+A reconciliação cruza RRN/STAN com `endToEndId` para garantir que cada autorização ISO 8583 tem seu PIX correspondente liquidado no SPI. Divergências geram alertas de reconciliação para tratamento manual.
+
+---
+
+## 8. Parcelamento — A Peculiaridade Brasileira
 
 ### Por que é único no Brasil
 
@@ -897,18 +1097,19 @@ Compra de R$ 1.200 em 12x sem juros:
 
 1. **Clearing:** cada parcela pode ser liquidada mensalmente (depende do adquirente)
 2. **Interchange:** parcelas têm interchange diferente (não regulado pelo BACEN como à vista)
-3. **Chargeback:** o portador pode contestar parCelas individuais ou o total
+3. **Chargeback:** o portador pode contestar parcelas individuais ou o total
 4. **Antecipação:** merchant pode antecipar parcelas futuras
 
-## 8. Exercícios
+## 9. Exercícios
 
 1. **Desenhe o fluxo** de uma transação sub-adquirente: App iFood → Stone (sub-acq) → Cielo (acq) → Elo → Itaú
 2. **Implemente `SoftDescriptorBuilder`** com testes: garanta que nomes de 30+ caracteres são truncados corretamente
 3. **Calcule a receita** de uma transação de R$ 100 crédito à vista: quanto fica com o emissor, bandeira, adquirente e merchant? (Assuma MDR 2.5%, interchange 0.7%, assessment 0.1%)
 4. **Documente 5 diferenças** entre certificação Elo (CELO) e certificação Visa (VCMS)
+5. **Compare os modelos econômicos:** para uma transação de R$ 500 em PIX tradicional vs PIX Crédito à vista (MDR 2,0%, interchange 0,7%), calcule quanto o merchant recebe líquido em cada modalidade e o custo total para o portador (considerando IOF de 0,38%).
 
 ### Desafio
-Implemente `InterchangeCalculator` com tabela completa (débito, crédito à vista, parcelado 2-6x, parcelado 7-12x) para as bandeiras Visa, Mastercard e Elo. Adicione lógica de on-us detection baseada em BIN do emissor vs BIN do adquirente.
+Implemente `InterchangeCalculator` com tabela completa (débito, crédito à vista, parcelado 2-6x, parcelado 7-12x, PIX crédito à vista, PIX parcelado) para as bandeiras Visa, Mastercard e Elo. Adicione lógica de on-us detection baseada em BIN do emissor vs BIN do adquirente.
 
 ### 4.1 O problema que resolve
 
