@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.lab</groupId>
+        <artifactId>payment-switch-lab</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>j8583-example</artifactId>
+    <name>j8583 Example</name>
+    <description>
+        Exemplos práticos usando net.sf.j8583 como alternativa ao jPOS.
+        Compare side-by-side: j8583 vs jPOS para pack/unpack de ISO 8583.
+    </description>
+
+    <dependencies>
+        <!-- j8583 — parsing/packing ISO 8583 (Apache 2.0) -->
+        <dependency>
+            <groupId>net.sf.j8583</groupId>
+            <artifactId>j8583</artifactId>
+        </dependency>
+
+        <!-- jPOS — para comparação lado a lado -->
+        <dependency>
+            <groupId>org.jpos</groupId>
+            <artifactId>jpos</artifactId>
+        </dependency>
+
+        <!-- iso-core do projeto (HexUtils, PANUtils) -->
+        <dependency>
+            <groupId>com.lab</groupId>
+            <artifactId>iso-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Testes -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

@@ -18,6 +18,7 @@
         <maven.compiler.target>${java.version}</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jpos.version>2.1.9</jpos.version>
+        <j8583.version>3.0.1</j8583.version>
         <junit.version>5.11.3</junit.version>
         <assertj.version>3.26.3</assertj.version>
         <micrometer.version>1.14.2</micrometer.version>
@@ -35,6 +36,7 @@
         <module>reconciliation</module>
         <module>observability</module>
         <module>integration-tests</module>
+        <module>j8583-example</module>
     </modules>
 
     <dependencyManagement>
@@ -44,6 +46,13 @@
                 <groupId>org.jpos</groupId>
                 <artifactId>jpos</artifactId>
                 <version>${jpos.version}</version>
+            </dependency>
+
+            <!-- j8583 (alternativa ao jPOS para parsing) -->
+            <dependency>
+                <groupId>net.sf.j8583</groupId>
+                <artifactId>j8583</artifactId>
+                <version>${j8583.version}</version>
             </dependency>
 
             <!-- Cache para deduplicação -->

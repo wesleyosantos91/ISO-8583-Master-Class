@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Configuração j8583 para ISO 8583:1987 — equivalente ao iso87ascii.xml do jPOS.
+
+  Diferenças principais:
+    jPOS:  GenericPackager XML define classes Java (IFA_NUMERIC, IFA_LLNUM, etc.)
+    j8583: Usa tipos próprios (NUMERIC, LLVAR, ALPHA, AMOUNT, DATE10, etc.)
+
+  Seções:
+    <header>    — Header ISO por tipo de mensagem (ex: "6000000000")
+    <template>  — Campos com valores default por tipo de mensagem
+    <parse>     — Como fazer parse de cada tipo de mensagem recebida
+-->
+<j8583-config>
+
+    <!-- ============================================================ -->
+    <!-- HEADERS — equivalente ao header="6000000000" do NACChannel    -->
+    <!-- ============================================================ -->
+    <header type="0200">ISO</header>
+    <header type="0210">ISO</header>
+    <header type="0400">ISO</header>
+    <header type="0410">ISO</header>
+    <header type="0800">ISO</header>
+    <header type="0810">ISO</header>
+
+    <!-- ============================================================ -->
+    <!-- TEMPLATE 0200 — Autorização Request                          -->
+    <!-- Campos que sempre estarão presentes numa autorização          -->
+    <!-- ============================================================ -->
+    <template type="0200">
+        <field num="3"  type="NUMERIC"  length="6">003000</field>
+        <field num="49" type="NUMERIC"  length="3">986</field>
+    </template>
+
+    <!-- ============================================================ -->
+    <!-- TEMPLATE 0210 — Autorização Response                         -->
+    <!-- ============================================================ -->
+    <template type="0210">
+        <field num="39" type="ALPHA"    length="2">00</field>
+    </template>
+
+    <!-- ============================================================ -->
+    <!-- TEMPLATE 0400 — Reversal Request                             -->
+    <!-- ============================================================ -->
+    <template type="0400">
+        <field num="49" type="NUMERIC"  length="3">986</field>
+    </template>
+
+    <!-- ============================================================ -->
+    <!-- TEMPLATE 0800 — Network Management (Echo/Sign-on)            -->
+    <!-- ============================================================ -->
+    <template type="0800">
+        <field num="70" type="NUMERIC"  length="3">301</field>
+    </template>
+
+    <!-- ============================================================ -->
+    <!-- PARSE 0200 — Como desserializar uma autorização recebida     -->
+    <!--                                                               -->
+    <!-- Equivalência de tipos j8583 → jPOS:                          -->
+    <!--   LLVAR     → IFA_LLNUM (variável, 2 dígitos de tamanho)     -->
+    <!--   NUMERIC   → IFA_NUMERIC (numérico fixo)                    -->
+    <!--   ALPHA     → IFA_ALPHA (alfanumérico fixo)                  -->
+    <!--   AMOUNT    → IFA_NUMERIC (12 dígitos com decimais)          -->
+    <!--   DATE10    → IFA_NUMERIC length=10 (MMDDhhmmss)             -->
+    <!--   LLLVAR    → IFA_LLLCHAR (variável, 3 dígitos de tamanho)  -->
+    <!--   BINARY    → IFA_BINARY (bytes raw)                         -->
+    <!-- ============================================================ -->
+    <parse type="0200">
+        <field num="2"   type="LLVAR"    length="19"/>
+        <field num="3"   type="NUMERIC"  length="6"/>
+        <field num="4"   type="AMOUNT"   length="12"/>
+        <field num="5"   type="AMOUNT"   length="12"/>
+        <field num="7"   type="DATE10"   length="10"/>
+        <field num="11"  type="NUMERIC"  length="6"/>
+        <field num="12"  type="TIME"     length="6"/>
+        <field num="13"  type="DATE4"    length="4"/>
+        <field num="14"  type="DATE_EXP" length="4"/>
+        <field num="18"  type="NUMERIC"  length="4"/>
+        <field num="22"  type="NUMERIC"  length="3"/>
+        <field num="23"  type="NUMERIC"  length="3"/>
+        <field num="25"  type="NUMERIC"  length="2"/>
+        <field num="26"  type="NUMERIC"  length="2"/>
+        <field num="32"  type="LLVAR"    length="11"/>
+        <field num="35"  type="LLVAR"    length="37"/>
+        <field num="37"  type="ALPHA"    length="12"/>
+        <field num="38"  type="ALPHA"    length="6"/>
+        <field num="39"  type="ALPHA"    length="2"/>
+        <field num="41"  type="ALPHA"    length="8"/>
+        <field num="42"  type="ALPHA"    length="15"/>
+        <field num="43"  type="ALPHA"    length="40"/>
+        <field num="48"  type="LLLVAR"   length="999"/>
+        <field num="49"  type="NUMERIC"  length="3"/>
+        <field num="52"  type="BINARY"   length="8"/>
+        <field num="54"  type="LLLVAR"   length="120"/>
+        <field num="55"  type="LLLVAR"   length="999"/>
+        <field num="60"  type="LLLVAR"   length="60"/>
+        <field num="63"  type="LLLVAR"   length="999"/>
+        <field num="70"  type="NUMERIC"  length="3"/>
+        <field num="90"  type="NUMERIC"  length="42"/>
+        <field num="100" type="LLVAR"    length="11"/>
+        <field num="127" type="LLLVAR"   length="999"/>
+    </parse>
+
+    <!-- PARSE 0210 — Response de autorização -->
+    <parse type="0210">
+        <field num="2"   type="LLVAR"    length="19"/>
+        <field num="3"   type="NUMERIC"  length="6"/>
+        <field num="4"   type="AMOUNT"   length="12"/>
+        <field num="7"   type="DATE10"   length="10"/>
+        <field num="11"  type="NUMERIC"  length="6"/>
+        <field num="12"  type="TIME"     length="6"/>
+        <field num="13"  type="DATE4"    length="4"/>
+        <field num="22"  type="NUMERIC"  length="3"/>
+        <field num="25"  type="NUMERIC"  length="2"/>
+        <field num="32"  type="LLVAR"    length="11"/>
+        <field num="37"  type="ALPHA"    length="12"/>
+        <field num="38"  type="ALPHA"    length="6"/>
+        <field num="39"  type="ALPHA"    length="2"/>
+        <field num="41"  type="ALPHA"    length="8"/>
+        <field num="42"  type="ALPHA"    length="15"/>
+        <field num="49"  type="NUMERIC"  length="3"/>
+        <field num="54"  type="LLLVAR"   length="120"/>
+        <field num="55"  type="LLLVAR"   length="999"/>
+        <field num="60"  type="LLLVAR"   length="60"/>
+    </parse>
+
+    <!-- PARSE 0400 — Reversal request -->
+    <parse type="0400">
+        <field num="2"   type="LLVAR"    length="19"/>
+        <field num="3"   type="NUMERIC"  length="6"/>
+        <field num="4"   type="AMOUNT"   length="12"/>
+        <field num="7"   type="DATE10"   length="10"/>
+        <field num="11"  type="NUMERIC"  length="6"/>
+        <field num="22"  type="NUMERIC"  length="3"/>
+        <field num="25"  type="NUMERIC"  length="2"/>
+        <field num="41"  type="ALPHA"    length="8"/>
+        <field num="42"  type="ALPHA"    length="15"/>
+        <field num="49"  type="NUMERIC"  length="3"/>
+        <field num="90"  type="NUMERIC"  length="42"/>
+    </parse>
+
+    <!-- PARSE 0410 — Reversal response -->
+    <parse type="0410">
+        <field num="2"   type="LLVAR"    length="19"/>
+        <field num="3"   type="NUMERIC"  length="6"/>
+        <field num="4"   type="AMOUNT"   length="12"/>
+        <field num="7"   type="DATE10"   length="10"/>
+        <field num="11"  type="NUMERIC"  length="6"/>
+        <field num="39"  type="ALPHA"    length="2"/>
+        <field num="41"  type="ALPHA"    length="8"/>
+        <field num="49"  type="NUMERIC"  length="3"/>
+    </parse>
+
+    <!-- PARSE 0800 — Network management (Echo, Sign-on) -->
+    <parse type="0800">
+        <field num="7"   type="DATE10"   length="10"/>
+        <field num="11"  type="NUMERIC"  length="6"/>
+        <field num="70"  type="NUMERIC"  length="3"/>
+    </parse>
+
+    <!-- PARSE 0810 — Network management response -->
+    <parse type="0810">
+        <field num="7"   type="DATE10"   length="10"/>
+        <field num="11"  type="NUMERIC"  length="6"/>
+        <field num="39"  type="ALPHA"    length="2"/>
+        <field num="70"  type="NUMERIC"  length="3"/>
+    </parse>
+
+</j8583-config>
